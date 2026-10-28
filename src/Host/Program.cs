@@ -61,6 +61,6 @@ app.UseRateLimiter(); // Must be before routing/auth
 app.UseAuthentication(); // Must be before authorization
 app.UseAuthorization();
 
-app.MapControllers().RequireRateLimiting("auth-limit"); // Apply rate limit to endpoints
+app.MapControllers();//.RequireRateLimiting("auth-limit"); // Apply rate limit to endpoints
 
 app.Run();

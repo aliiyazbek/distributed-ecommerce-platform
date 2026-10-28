@@ -1,7 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Modules.Users.Contracts;
 using Modules.Users.Interfaces;
-
+using Microsoft.AspNetCore.RateLimiting; 
 namespace Modules.Users.Controllers;
 
 [ApiController]
@@ -17,6 +17,7 @@ public class UsersController : ControllerBase
     }
 
     [HttpPost("register")]
+    [EnableRateLimiting("auth-limit")]
     public async Task<IActionResult> Register([FromBody] RegisterRequest request)
     {
         var (success, data, error) = await _authService.RegisterAsync(request);
@@ -29,6 +30,7 @@ public class UsersController : ControllerBase
     }
 
     [HttpPost("login")]
+    [EnableRateLimiting("auth-limit")]
     public async Task<IActionResult> Login([FromBody] LoginRequest request)
     {
         var (success, data, error) = await _authService.LoginAsync(request);
