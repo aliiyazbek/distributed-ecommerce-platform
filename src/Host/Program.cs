@@ -3,21 +3,45 @@ using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using Modules.Users;using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
+using Asp.Versioning;
+using Modules.Users;
 using Modules.Users.Persistence;
+using Modules.Products.Persistence;
+using Modules.Products;
+using Shared;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // 1. Database Configuration
-var connectionString = builder.Configuration.GetConnectionString("Database") 
-                       ?? throw new InvalidOperationException("Connection string 'Database' not found.");
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") 
+                       ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
 
 builder.Services.AddDbContext<UsersDbContext>(options =>
-    options.UseNpgsql(connectionString));
+    options.UseNpgsql(connectionString, b => b.MigrationsAssembly("Modules.Users")));
 
-// 2. JWT Authentication
-var jwtSecret = "super_secret_key_that_must_be_at_least_32_characters_long_for_hs256!";
+builder.Services.AddDbContext<ProductsDbContext>(options =>
+    options.UseNpgsql(connectionString, b => b.MigrationsAssembly("Modules.Products")));
+
+// 2. Swagger & Controllers
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+// 3. Unified Error Handling (Requirement 1)
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+builder.Services.AddProblemDetails();
+
+// 4. API Versioning (Requirement 1)
+builder.Services.AddApiVersioning(options =>
+{
+    options.DefaultApiVersion = new ApiVersion(1, 0);
+    options.AssumeDefaultVersionWhenUnspecified = true;
+    options.ReportApiVersions = true;
+});
+
+// 5. JWT Authentication
+var jwtSecret = builder.Configuration["Jwt:Key"] ?? "super_secret_key_that_must_be_at_least_32_characters_long_for_hs256!";
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -33,7 +57,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorization();
 
-// 3. Rate Limiting (Requirement 1: Prevent Brute-Force Attacks)
+// 6. Rate Limiting (Requirement 1: Prevent Brute-Force Attacks)
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -46,21 +70,38 @@ builder.Services.AddRateLimiter(options =>
     });
 });
 
-// 4. Register Modules & MediatR
-builder.Services.AddUsersModule(); // Your clean extension method
+// 7. Register Modules & MediatR
+builder.Services.AddUsersModule(); 
+builder.Services.AddProductsModule(connectionString); // <-- Make sure this line exists!
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(AppDomain.CurrentDomain.GetAssemblies()));
-
-builder.Services.AddControllers();
-
 var app = builder.Build();
 
-// 5. Middleware Pipeline (Order is strictly critical)
+// 8. Middleware Pipeline (Order is strictly critical)
+// Apply Security Headers (Requirement 1)
+app.Use(async (context, next) =>
+{
+    context.Response.Headers.Append("X-Content-Type-Options", "nosniff");
+    context.Response.Headers.Append("X-Frame-Options", "DENY");
+    context.Response.Headers.Append("X-XSS-Protection", "1; mode=block");
+    await next();
+});
+
+app.UseExceptionHandler(); // Catches all errors and routes them to GlobalExceptionHandler
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
 app.UseHttpsRedirection();
+
+app.UseStaticFiles(); // Added here so static files are served efficiently
 
 app.UseRateLimiter(); // Must be before routing/auth
 app.UseAuthentication(); // Must be before authorization
 app.UseAuthorization();
 
-app.MapControllers();//.RequireRateLimiting("auth-limit"); // Apply rate limit to endpoints
+app.MapControllers();
 
 app.Run();
