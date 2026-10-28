@@ -57,19 +57,23 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorization();
 
-// 6. Rate Limiting (Requirement 1: Prevent Brute-Force Attacks)
+// 6. Rate Limiting (Partitioned by IP Address)
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-    options.AddFixedWindowLimiter("auth-limit", limitOptions =>
-    {
-        limitOptions.PermitLimit = 5; // Max 5 attempts
-        limitOptions.Window = TimeSpan.FromSeconds(10); // Per 10 seconds
-        limitOptions.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
-        limitOptions.QueueLimit = 0; // Drop requests immediately if over limit
-    });
+    
+    options.AddPolicy("auth-limit", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            // Use the client's IP address as the unique partition key
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown_ip",
+            factory: partition => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 5, // Max 5 attempts per IP
+                Window = TimeSpan.FromSeconds(10), // Per 10 seconds
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                QueueLimit = 0
+            }));
 });
-
 // 7. Register Modules & MediatR
 builder.Services.AddUsersModule(); 
 builder.Services.AddProductsModule(connectionString); // <-- Make sure this line exists!
