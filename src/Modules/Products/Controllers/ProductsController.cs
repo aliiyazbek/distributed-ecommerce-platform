@@ -2,13 +2,14 @@ using Asp.Versioning;
 using Microsoft.AspNetCore.Mvc;
 using Modules.Products.Contracts;
 using Modules.Products.Interfaces;
+using Shared.Controllers;
 
 namespace Modules.Products.Controllers;
 
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/[controller]")]
-public class ProductsController : ControllerBase
+public class ProductsController : BaseController
 {
     private readonly IProductService _productService;
 

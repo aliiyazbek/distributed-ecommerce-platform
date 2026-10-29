@@ -5,14 +5,14 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Modules.Orders.Contracts;
 using Modules.Orders.Interfaces;
-
+using Shared.Controllers;
 namespace Modules.Orders.Controllers;
 
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/[controller]")]
 [Authorize]
-public class OrdersController : ControllerBase
+public class OrdersController : BaseController
 {
     private readonly IOrderService _orderService;
 
