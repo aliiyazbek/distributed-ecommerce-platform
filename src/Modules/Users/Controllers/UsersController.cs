@@ -1,12 +1,13 @@
 using Microsoft.AspNetCore.Mvc;
 using Modules.Users.Contracts;
 using Modules.Users.Interfaces;
-using Microsoft.AspNetCore.RateLimiting; 
+using Microsoft.AspNetCore.RateLimiting;
+using Shared.Controllers;
 namespace Modules.Users.Controllers;
 
 [ApiController]
 [Route("api/users")]
-public class UsersController : ControllerBase
+public class UsersController : BaseController
 {
     private readonly IAuthService _authService;
 
