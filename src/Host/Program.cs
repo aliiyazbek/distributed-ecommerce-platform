@@ -9,6 +9,8 @@ using Modules.Users;
 using Modules.Users.Persistence;
 using Modules.Products.Persistence;
 using Modules.Products;
+using Modules.Orders;
+using Modules.Orders.Persistence;
 using Shared;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -22,6 +24,9 @@ builder.Services.AddDbContext<UsersDbContext>(options =>
 
 builder.Services.AddDbContext<ProductsDbContext>(options =>
     options.UseNpgsql(connectionString, b => b.MigrationsAssembly("Modules.Products")));
+
+builder.Services.AddDbContext<OrdersDbContext>(options =>
+    options.UseNpgsql(connectionString, b => b.MigrationsAssembly("Modules.Orders")));
 
 // 2. Swagger & Controllers
 builder.Services.AddControllers();
@@ -77,6 +82,7 @@ builder.Services.AddRateLimiter(options =>
 // 7. Register Modules & MediatR
 builder.Services.AddUsersModule(); 
 builder.Services.AddProductsModule(connectionString); // <-- Make sure this line exists!
+builder.Services.AddOrdersModule();
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(AppDomain.CurrentDomain.GetAssemblies()));
 var app = builder.Build();
 

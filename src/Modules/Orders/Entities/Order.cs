@@ -1,12 +1,27 @@
+using Shared;
+
 namespace Modules.Orders.Entities;
 
-public class Order
+public class Order : BaseEntity
 {
-    public Guid Id { get; set; } = Guid.NewGuid();
-    public Guid UserId { get; set; }
-    public Guid ProductId { get; set; }
-    public int Quantity { get; set; }
-    public decimal TotalPrice { get; set; }
-    public string Status { get; set; } = "Pending"; // Pending, Shipped, Delivered, Cancelled
-    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public Guid UserId { get; private set; }
+    public OrderStatus Status { get; private set; }
+    public decimal TotalPrice { get; private set; }
+    public List<OrderItem> Items { get; private set; } = new();
+
+    private Order() { }
+
+    public Order(Guid userId, List<OrderItem> items)
+    {
+        UserId = userId;
+        Items = items;
+        Status = OrderStatus.Pending;
+        TotalPrice = items.Sum(i => i.UnitPrice * i.Quantity);
+    }
+
+    public void ChangeStatus(OrderStatus status)
+    {
+        Status = status;
+        UpdateTimestamp();
+    }
 }
