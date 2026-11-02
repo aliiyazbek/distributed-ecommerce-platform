@@ -1,26 +1,39 @@
-using System.ComponentModel;
 using Shared;
 
 namespace Modules.Users.Entities;
 
-
 public class User : BaseEntity
 {
-    public string Email {get;private set;}
-    public string PasswordHash {get;private set;}
-    public int RoleId { get; set; }
-    public Role Role { get; set; } = null!;
+    public string Email { get; private set; }
+    public string PasswordHash { get; private set; }
+    public int RoleId { get; private set; }
+    public Role Role { get; private set; } = null!;
 
-    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
-    // EF Core constructor 
-    private User(){}
+    // 1-to-1 Composition Navigation Properties
+    public CustomerProfile? CustomerProfile { get; private set; }
+    public AdminProfile? AdminProfile { get; private set; }
 
-public User(string email, string passwordHash, int roleId)
+    public DateTime CreatedAt { get; private set; }
+
+    protected User() { } 
+
+    public User(string email, string passwordHash, int roleId)  
     {
-        //Id = Guid.NewGuid(); // Or remove this line if BaseEntity assigns the Id automatically
+        // Notice we don't set Id or CreatedAt here anymore. 
+        // We let the hidden constructor inside BaseEntity handle that infrastructure logic!
         Email = email;
         PasswordHash = passwordHash;
         RoleId = roleId;
-        CreatedAt = DateTime.UtcNow;
+    }
+
+    // DDD Encapsulation: Methods to attach profiles safely
+    public void SetCustomerProfile(CustomerProfile profile)
+    {
+        CustomerProfile = profile;
+    }
+
+    public void SetAdminProfile(AdminProfile profile)
+    {
+        AdminProfile = profile;
     }
 }

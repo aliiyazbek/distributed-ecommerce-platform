@@ -23,6 +23,33 @@ namespace Modules.Users.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Modules.Users.Entities.AdminProfile", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("DepartmentName")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("UserId");
+
+                    b.ToTable("AdminProfiles", "users");
+                });
+
+            modelBuilder.Entity("Modules.Users.Entities.CustomerProfile", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ShippingAddress")
+                        .HasColumnType("text");
+
+                    b.HasKey("UserId");
+
+                    b.ToTable("CustomerProfiles", "users");
+                });
+
             modelBuilder.Entity("Modules.Users.Entities.Role", b =>
                 {
                     b.Property<int>("Id")
@@ -82,12 +109,34 @@ namespace Modules.Users.Migrations
                     b.ToTable("Users", "users");
                 });
 
+            modelBuilder.Entity("Modules.Users.Entities.AdminProfile", b =>
+                {
+                    b.HasOne("Modules.Users.Entities.User", "User")
+                        .WithOne("AdminProfile")
+                        .HasForeignKey("Modules.Users.Entities.AdminProfile", "UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("Modules.Users.Entities.CustomerProfile", b =>
+                {
+                    b.HasOne("Modules.Users.Entities.User", "User")
+                        .WithOne("CustomerProfile")
+                        .HasForeignKey("Modules.Users.Entities.CustomerProfile", "UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("Modules.Users.Entities.User", b =>
                 {
                     b.HasOne("Modules.Users.Entities.Role", "Role")
                         .WithMany("Users")
                         .HasForeignKey("RoleId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("Role");
@@ -96,6 +145,13 @@ namespace Modules.Users.Migrations
             modelBuilder.Entity("Modules.Users.Entities.Role", b =>
                 {
                     b.Navigation("Users");
+                });
+
+            modelBuilder.Entity("Modules.Users.Entities.User", b =>
+                {
+                    b.Navigation("AdminProfile");
+
+                    b.Navigation("CustomerProfile");
                 });
 #pragma warning restore 612, 618
         }
