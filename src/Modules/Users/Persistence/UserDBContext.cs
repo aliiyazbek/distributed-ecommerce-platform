@@ -1,9 +1,10 @@
 using Microsoft.EntityFrameworkCore;
+using Modules.Users.Interfaces; // Add this using directive
 using Modules.Users.Entities;
 
 namespace Modules.Users.Persistence;
 
-public class UsersDbContext : DbContext
+public class UsersDbContext : DbContext, IUnitOfWork
 {
     public UsersDbContext(DbContextOptions<UsersDbContext> options) : base(options) { }
 

@@ -2,66 +2,61 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 using MediatR;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Modules.Users.Contracts;
 using Modules.Users.Entities;
 using Modules.Users.Interfaces;
-using Modules.Users.Persistence;
 
 namespace Modules.Users.Services;
 
 public class AuthService : IAuthService
 {
-    private readonly UsersDbContext _dbContext;
+    private readonly IUserRepository _userRepository;
+    private readonly IUnitOfWork _unitOfWork;
     private readonly IPublisher _publisher;
 
     private const string JwtSecret = "super_secret_key_that_must_be_at_least_32_characters_long_for_hs256!";
 
-    public AuthService(UsersDbContext dbContext, IPublisher publisher)
+    public AuthService(IUserRepository userRepository, IUnitOfWork unitOfWork, IPublisher publisher)
     {
-        _dbContext = dbContext;
+        _userRepository = userRepository;
+        _unitOfWork = unitOfWork;
         _publisher = publisher;
     }
 
     public async Task<(bool Success, AuthResponse? Data, string? Error)> RegisterAsync(RegisterRequest request)
     {
-        // 1. Check for existing user
-        if (await _dbContext.Users.AnyAsync(u => u.Email == request.Email))
+        // 1. Query via Repository
+        if (await _userRepository.ExistsByEmailAsync(request.Email))
             return (false, null, "Email is already registered.");
 
-        // 2. Hash the password
         var hashedPassword = BCrypt.Net.BCrypt.HashPassword(request.Password);
         
-        // 3. Create the Aggregate Root
-        // BEST PRACTICE: Public registration defaults to Role 2 (Customer).
-        int assignedRoleId = 2; 
+        int assignedRoleId = 2; // Default to Customer for PoLP
         var user = new User(request.Email, hashedPassword, assignedRoleId);
         
-        // 4. Factory Logic: Attach the correct Profile based on the Role
         if (assignedRoleId == 2)
         {
-            var customerProfile = new CustomerProfile(user.Id);
-            user.SetCustomerProfile(customerProfile);
+            user.SetCustomerProfile(new CustomerProfile(user.Id));
         }
         else if (assignedRoleId == 1)
         {
-            var adminProfile = new AdminProfile(user.Id, "General IT");
-            user.SetAdminProfile(adminProfile);
+            user.SetAdminProfile(new AdminProfile(user.Id, "General IT"));
         }
         
-        // 5. Atomic Transaction / Unit of Work
-        // EF Core Change Tracker sees the attached profile and queues both for insertion.
-        _dbContext.Users.Add(user);
-        await _dbContext.SaveChangesAsync();
+        // 2. Track entity in memory via Repository
+        _userRepository.Add(user);
+        
+        // 3. Commit atomic transaction via Unit of Work
+        await _unitOfWork.SaveChangesAsync();
 
-        // 6. Explicit Loading for the JWT
-        await _dbContext.Entry(user).Reference(u => u.Role).LoadAsync();
+        // 4. Encapsulated Explicit Loading
+        await _userRepository.LoadRoleAsync(user);
 
-        // 7. Publish integration event
+        // 5. Publish Event
         await _publisher.Publish(new Shared.Events.UserRegisteredIntegrationEvent(user.Id, user.Email));
 
-        // 8. Generate JWT
+        // 6. Generate JWT
         var token = GenerateJwtToken(user);
         
         return (true, new AuthResponse(user.Id, user.Email, token), null);
@@ -69,16 +64,12 @@ public class AuthService : IAuthService
 
     public async Task<(bool Success, AuthResponse? Data, string? Error)> LoginAsync(LoginRequest request)
     {
-        // 1. Retrieve the user AND their Role via SQL JOIN
-        var user = await _dbContext.Users
-            .Include(u => u.Role) 
-            .SingleOrDefaultAsync(u => u.Email == request.Email);
+        // 1. Fetch fully hydrated Aggregate Root via Repository
+        var user = await _userRepository.GetByEmailAsync(request.Email);
         
-        // 2. Verify existence and password match
         if (user == null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
             return (false, null, "Invalid email or password.");
 
-        // 3. Generate the JWT
         var token = GenerateJwtToken(user);
         
         return (true, new AuthResponse(user.Id, user.Email, token), null);

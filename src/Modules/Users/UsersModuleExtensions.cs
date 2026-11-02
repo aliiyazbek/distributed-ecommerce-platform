@@ -4,6 +4,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Modules.Users.Decorators;
 using Modules.Users.Interfaces;
+using Modules.Users.Persistence;
+using Modules.Users.Persistence.Repositories;
 using Modules.Users.Services;
 
 namespace Modules.Users;
@@ -23,9 +25,15 @@ public static class UsersModuleExtensions
             return new LoggingAuthServiceDecorator(baseService, logger);
         });
 
-        // 3. Register FluentValidation specifically for this module's assembly
+        // 3. Register FluentValidation
         services.AddFluentValidationAutoValidation();
         services.AddValidatorsFromAssemblyContaining<Validators.RegisterRequestValidator>();
+
+        // 4. Register the Database Abstractions (Persistence Ignorance)
+        services.AddScoped<IUserRepository, UserRepository>();
+        
+        // Register IUnitOfWork using the factory delegate tied to the DbContext
+        services.AddScoped<IUnitOfWork>(sp => sp.GetRequiredService<UsersDbContext>());
 
         return services;
     }

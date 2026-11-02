@@ -12,6 +12,7 @@ using Modules.Products;
 using Modules.Orders;
 using Modules.Orders.Persistence;
 using Shared;
+using Modules.Users.Interfaces;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -97,6 +98,7 @@ app.Use(async (context, next) =>
     context.Response.Headers.Append("X-XSS-Protection", "1; mode=block");
     await next();
 });
+
 
 app.UseExceptionHandler(); // Catches all errors and routes them to GlobalExceptionHandler
 
