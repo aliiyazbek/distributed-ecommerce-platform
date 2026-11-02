@@ -29,9 +29,6 @@ public class AuthService : IAuthService
     public async Task<(bool Success, AuthResponse? Data, string? Error)> RegisterAsync(RegisterRequest request)
     {
         // 1. Check for existing user to prevent duplicate emails
-        // Use AnyAsync instead of retrieving the entire record. 
-        // This translates to a highly optimized SQL 'SELECT EXISTS (...)' query,
-        // minimizing database I/O, network bandwidth, and application memory allocation.
         if (await _dbContext.Users.AnyAsync(u => u.Email == request.Email))
             return (false, null, "Email is already registered.");
 
@@ -39,14 +36,19 @@ public class AuthService : IAuthService
         var hashedPassword = BCrypt.Net.BCrypt.HashPassword(request.Password);
         
         // 3. Create and save the domain entity
-        var user = new User(request.Email, hashedPassword);
+        var user = new User(request.Email, hashedPassword, 1);
+        
         _dbContext.Users.Add(user);
         await _dbContext.SaveChangesAsync();
 
-        // 4. Publish the integration event for the Notifications module
+        // 4. EXPLICIT LOADING: Fetch the Role from the DB now that the user is saved.
+        // If we don't do this, user.Role will be null and the JWT Generator will crash.
+        await _dbContext.Entry(user).Reference(u => u.Role).LoadAsync();
+
+        // 5. Publish the integration event for the Notifications module
         await _publisher.Publish(new Shared.Events.UserRegisteredIntegrationEvent(user.Id, user.Email));
 
-        // 5. Generate the JWT
+        // 6. Generate the JWT
         var token = GenerateJwtToken(user);
         
         return (true, new AuthResponse(user.Id, user.Email, token), null);
@@ -54,12 +56,10 @@ public class AuthService : IAuthService
 
     public async Task<(bool Success, AuthResponse? Data, string? Error)> LoginAsync(LoginRequest request)
     {
-        // 1. Retrieve the user
-        // Use SingleOrDefaultAsync to enforce strict data integrity on unique fields.
-        // This translates to a SQL 'LIMIT 2' query—if the database somehow finds a second 
-        // user with the same email, it intentionally throws an exception rather than 
-        // silently logging in the wrong person.
-        var user = await _dbContext.Users.SingleOrDefaultAsync(u => u.Email == request.Email);
+        // 1. Retrieve the user AND their Role via SQL JOIN (.Include)
+        var user = await _dbContext.Users
+            .Include(u => u.Role) 
+            .SingleOrDefaultAsync(u => u.Email == request.Email);
         
         // 2. Verify existence and password match
         if (user == null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
@@ -83,7 +83,9 @@ public class AuthService : IAuthService
             {
                 new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
                 new Claim(JwtRegisteredClaimNames.Email, user.Email),
-                new Claim(ClaimTypes.Role, user.Role)
+                
+                // Extract the string Name from the joined Role entity
+                new Claim(ClaimTypes.Role, user.Role.Name) 
             }),
             Expires = DateTime.UtcNow.AddHours(2),
             SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
@@ -92,5 +94,4 @@ public class AuthService : IAuthService
         var token = tokenHandler.CreateToken(tokenDescriptor);
         return tokenHandler.WriteToken(token);
     }
-    
 }

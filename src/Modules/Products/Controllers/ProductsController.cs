@@ -1,4 +1,5 @@
 using Asp.Versioning;
+using Microsoft.AspNetCore.Authorization; // Added
 using Microsoft.AspNetCore.Mvc;
 using Modules.Products.Contracts;
 using Modules.Products.Interfaces;
@@ -9,6 +10,7 @@ namespace Modules.Products.Controllers;
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/[controller]")]
+[Authorize] // Enforces that all endpoints require a valid JWT (Customer or Admin)
 public class ProductsController : BaseController
 {
     private readonly IProductService _productService;
@@ -18,7 +20,8 @@ public class ProductsController : BaseController
         _productService = productService;
     }
 
-    [HttpPost]
+    [HttpPost("CreateProduct")]
+    [Authorize(Roles = "Admin")] 
     public async Task<IActionResult> CreateProduct([FromForm] CreateProductRequest request)
     {
         var response = await _productService.CreateProductAsync(request);

@@ -5,25 +5,27 @@ namespace Modules.Users.Persistence;
 
 public class UsersDbContext : DbContext
 {
-    public UsersDbContext(DbContextOptions<UsersDbContext> options) : base(options)
-    {
-    }
+    public UsersDbContext(DbContextOptions<UsersDbContext> options) : base(options) { }
 
     public DbSet<User> Users { get; set; }
+    public DbSet<Role> Roles { get; set; } // Added Roles table
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // Enforce module isolation at the database schema level
         modelBuilder.HasDefaultSchema("users");
 
-        modelBuilder.Entity<User>(builder =>
-        {
-            builder.HasKey(u => u.Id);
-            builder.HasIndex(u => u.Email).IsUnique();
-            builder.Property(u => u.Email).IsRequired().HasMaxLength(255);
-            builder.Property(u => u.PasswordHash).IsRequired();
-            builder.Property(u => u.Role).IsRequired().HasMaxLength(50);
-        });
+        // 1. Configure Relationship
+        modelBuilder.Entity<User>()
+            .HasOne(u => u.Role)
+            .WithMany(r => r.Users)
+            .HasForeignKey(u => u.RoleId)
+            .OnDelete(DeleteBehavior.Restrict); // Prevent deleting a role if users have it
+
+        // 2. Seed Default Roles (Best Practice)
+        modelBuilder.Entity<Role>().HasData(
+            new Role { Id = 1, Name = "Admin" },
+            new Role { Id = 2, Name = "Customer" }
+        );
 
         base.OnModelCreating(modelBuilder);
     }
