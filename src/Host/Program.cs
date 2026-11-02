@@ -86,6 +86,8 @@ builder.Services.AddOrdersModule();
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(AppDomain.CurrentDomain.GetAssemblies()));
 var app = builder.Build();
 
+
+
 // 8. Middleware Pipeline (Order is strictly critical)
 // Apply Security Headers (Requirement 1)
 app.Use(async (context, next) =>
