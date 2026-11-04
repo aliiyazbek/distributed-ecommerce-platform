@@ -1,0 +1,5 @@
+.pagination { display: flex; flex-wrap: wrap; gap: 6px; }
+.pagination button { min-width: 34px; padding: 7px 11px; background: #fff; border: 1px solid var(--border); border-radius: 6px; color: #57514c; font-size: 12px; }
+.pagination button:hover:not(:disabled) { background: #f8f7f5; }
+.pagination button:disabled { color: #cbc7c1; }
+.pagination .active, .pagination .active:hover:not(:disabled) { background: var(--brand); border-color: var(--brand); color: #fff; }

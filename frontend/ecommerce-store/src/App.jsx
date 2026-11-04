@@ -1,36 +1,38 @@
-import { useEffect, useState } from 'react'
-import Navbar from './components/Navbar'
+import { Route, Routes } from 'react-router-dom'
+import Layout from './components/Layout'
+import RequireRole from './components/RequireRole'
 import AddProduct from './pages/admin/AddProduct'
 import AllOrders from './pages/admin/AllOrders'
-import AdminOrderDetails from './pages/admin/AdminOrderDetails'
-import { mockOrders } from './data/mockOrders'
-import { updateOrderStatus } from './services/orderService'
-import { resolveAdminRoute } from './navigation/adminRoutes'
-import './pages/admin/AdminLayout.css'
+import OrderDetails from './pages/shared/OrderDetails'
+import StatusPage from './pages/shared/StatusPage'
+import Cart from './pages/store/Cart'
+import MyOrders from './pages/store/MyOrders'
+import ProductDetails from './pages/store/ProductDetails'
+import Products from './pages/store/Products'
+import SignIn from './pages/store/SignIn'
+import SignUp from './pages/store/SignUp'
 
 export default function App() {
-  const [route, setRoute] = useState(() => resolveAdminRoute(window.location.hash))
-  const [orders, setOrders] = useState(mockOrders)
-
-  async function saveOrderStatus(id, status) {
-    const updated = await updateOrderStatus(orders.find(order => order.id === id), status)
-    setOrders(current => current.map(order => order.id === id ? updated : order))
-  }
-
-  useEffect(() => {
-    const syncRoute = () => setRoute(resolveAdminRoute(window.location.hash))
-    window.addEventListener('hashchange', syncRoute)
-    return () => window.removeEventListener('hashchange', syncRoute)
-  }, [])
-
   return (
-    <>
-      <Navbar activePage={route.page} />
-      {route.page === 'orders'
-        ? route.orderId !== undefined
-          ? <AdminOrderDetails key={route.orderId} order={orders.find(order => order.id === route.orderId)} onSaveStatus={saveOrderStatus} />
-          : <AllOrders orders={orders} />
-        : <AddProduct />}
-    </>
+    <Routes>
+      <Route element={<Layout />}>
+        <Route index element={<Products />} />
+        <Route path="products/:id" element={<ProductDetails />} />
+        <Route path="cart" element={<Cart />} />
+        <Route path="signin" element={<SignIn />} />
+        <Route path="signup" element={<SignUp />} />
+        <Route element={<RequireRole />}>
+          <Route path="orders/:id" element={<OrderDetails />} />
+        </Route>
+        <Route element={<RequireRole role="Customer" />}>
+          <Route path="orders" element={<MyOrders />} />
+        </Route>
+        <Route element={<RequireRole role="Admin" />}>
+          <Route path="admin/add-product" element={<AddProduct />} />
+          <Route path="admin/orders" element={<AllOrders />} />
+        </Route>
+        <Route path="*" element={<StatusPage kind="not-found" />} />
+      </Route>
+    </Routes>
   )
 }

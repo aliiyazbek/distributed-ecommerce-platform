@@ -1,0 +1,2 @@
+div.product-image-empty { display: grid; place-items: center; background: #f1efeb; color: #c4bfb8; }
+.product-image-empty svg { width: 34%; max-width: 64px; }

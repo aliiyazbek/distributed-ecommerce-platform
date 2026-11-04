@@ -1,18 +1,18 @@
 .order-progress { margin-top: 22px; padding-top: 22px; border-top: 1px solid #efedeb; }
 .order-progress h2 { margin: 0 0 14px; font-size: 11px; line-height: 1.4; font-weight: 500; text-transform: uppercase; letter-spacing: 0.4px; color: #77716a; }
 .order-progress ol { display: flex; list-style: none; padding: 0; margin: 0; }
-.order-progress li { display: flex; flex: 1; align-items: center; gap: 8px; color: #aaa5a0; font-size: 13px; line-height: 1.4; }
+.order-progress li { display: flex; flex: 1; align-items: center; gap: 8px; color: #77716a; font-size: 13px; line-height: 1.4; }
 .order-progress li:last-child { flex: none; }
 .order-progress .progress-current { color: #35312e; }
 .order-progress .progress-completed { color: #77716a; }
 .progress-completed .progress-icon { color: #77716a; background: #f5f4f2; border-color: #dcd9d5; }
 .progress-icon { width: 29px; height: 29px; border: 1px solid #e6e3df; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0; }
 .progress-icon svg { width: 19px; height: 19px; }
-.progress-icon.order-status-badge--pending { color: white; background: #ff9900; border-color: #ffcf73; box-shadow: 0 0 0 3px #fff3d8; }
+.progress-icon.order-status-badge--pending { color: white; background: #c77700; border-color: #ffcf73; box-shadow: 0 0 0 3px #fff3d8; }
 .progress-icon.order-status-badge--shipped { color: white; background: #1676b8; border-color: #d0eaff; box-shadow: 0 0 0 3px #eff8ff; }
 .progress-icon.order-status-badge--delivered { color: white; background: #15875a; border-color: #c9f0dc; box-shadow: 0 0 0 3px #ecfdf4; }
 .progress-connector { height: 2px; background: #efedeb; flex: 1; margin: 0 14px 0 6px; }
-.progress-cancelled { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 29px; margin: 0; color: #df2852; font-size: 13px; line-height: 1.5; }
+.progress-cancelled { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 29px; margin: 0; color: #c81e47; font-size: 13px; line-height: 1.5; }
 @media (max-width: 540px) {
   .order-progress li { gap: 5px; font-size: 11px; }
   .progress-connector { margin: 0 6px; }
