@@ -1,0 +1,4 @@
+.status-page { display: flex; justify-content: center; padding: 80px 16px; }
+.status-card { width: min(420px, 100%); padding: 32px; text-align: center; }
+.status-card h1 { margin: 0 0 8px; font-size: 21px; font-weight: 600; letter-spacing: -0.5px; }
+.status-card p { margin: 0 0 22px; font-size: 13px; line-height: 1.6; color: var(--text-soft); }

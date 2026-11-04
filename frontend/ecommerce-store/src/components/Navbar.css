@@ -3,19 +3,23 @@
 .brand-icon { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; background: #5035ff; color: white; }
 .brand-icon svg { width: 18px; height: 18px; }
 .nav-links { display: flex; align-items: center; gap: 8px; }
-.nav-links a, .nav-links button { border: 0; border-radius: 6px; padding: 8px 11px; background: transparent; color: #5f5b56; font-size: 12px; text-decoration: none; white-space: nowrap; }
-.nav-links .active { background: #252320; color: white; }
+.nav-links a { display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; padding: 8px 11px; color: #5f5b56; font-size: 12px; text-decoration: none; white-space: nowrap; }
+.nav-links a:hover { background: #f5f4f2; color: #252320; }
+.nav-links .active, .nav-links .active:hover { background: #252320; color: white; }
+.nav-links .nav-primary, .nav-links .nav-primary:hover { background: var(--brand); color: #fff; }
+.nav-count { min-width: 18px; padding: 1px 5px; border-radius: 99px; background: #efedeb; color: #57514c; font-family: ui-monospace, Consolas, monospace; font-size: 10px; font-weight: 600; text-align: center; }
+.nav-links .active .nav-count { background: #ffffff33; color: #fff; }
 .nav-account { display: flex; align-items: center; gap: 18px; border-left: 1px solid #efedeb; padding-left: 18px; }
 .account-email { padding: 4px 9px; background: #f0f2ff; border: 1px solid #dce1ff; border-radius: 5px; color: #4c4a50; font-size: 11px; }
-.sign-out { display: flex; align-items: center; gap: 5px; padding: 0; border: 0; background: transparent; color: #68635e; font-size: 11px; white-space: nowrap; }
+.sign-out { display: flex; align-items: center; gap: 5px; padding: 6px 0; border: 0; background: transparent; color: #68635e; font-size: 11px; white-space: nowrap; }
+.sign-out:hover { color: #252320; }
 .sign-out svg { width: 13px; height: 13px; }
-@media (max-width: 850px) {
+@media (max-width: 900px) {
   .navbar { gap: 12px; padding: 14px 18px; flex-wrap: wrap; }
   .nav-account { margin-left: auto; }
-  .nav-links { order: 3; width: 100%; justify-content: center; }
+  .nav-links { order: 3; width: 100%; justify-content: center; flex-wrap: wrap; }
 }
 @media (max-width: 440px) {
-  .nav-account { border: 0; padding: 0; }
-  .account-email { max-width: 145px; overflow: hidden; text-overflow: ellipsis; }
-  .sign-out { display: none; }
+  .nav-account { border: 0; padding: 0; gap: 10px; }
+  .account-email { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }

@@ -11,8 +11,8 @@
   white-space: nowrap;
 }
 .order-status-dot { width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
-.order-status-badge--pending { color: #bc7908; background: #fffbeb; border-color: #fce8b2; }
-.order-status-badge--shipped { color: #1676b8; background: #eff8ff; border-color: #d0eaff; }
-.order-status-badge--delivered { color: #15875a; background: #ecfdf4; border-color: #c9f0dc; }
-.order-status-badge--cancelled { color: #df2852; background: #fff1f4; border-color: #ffd5df; }
+.order-status-badge--pending { color: #8f5b06; background: #fffbeb; border-color: #fce8b2; }
+.order-status-badge--shipped { color: #12659e; background: #eff8ff; border-color: #d0eaff; }
+.order-status-badge--delivered { color: #0f7a50; background: #ecfdf4; border-color: #c9f0dc; }
+.order-status-badge--cancelled { color: #c81e47; background: #fff1f4; border-color: #ffd5df; }
 .order-status-badge--unknown { color: #68635e; background: #f8f7f5; border-color: #e6e3df; }
