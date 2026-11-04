@@ -48,47 +48,31 @@ public class OrderService : IOrderService
         var order = new Order(userId, items);
 
         // 2. RESERVATION PHASE: Network Call to Node.js Microservice
-        var deadline = DateTime.UtcNow.AddMilliseconds(2000); // Strict 2000ms resiliency timeout[cite: 3]
-        var reservedItems = new List<OrderItem>();
+        var deadline = DateTime.UtcNow.AddMilliseconds(2000); 
+        var reservedItems = new List<(Guid ProductId, int Quantity)>();
         
         try
         {
             foreach (var item in order.Items)
             {
-                // Replaces the old monolith MediatR command
                 await _inventoryClient.ReserveQuantityAsync(new ReserveQuantityRequest 
                 { 
                     ProductId = item.ProductId.ToString(),
                     Amount = item.Quantity,
-                    OrderId = order.Id.ToString() // Enforces idempotency during network retries[cite: 3]
+                    OrderId = order.Id.ToString() 
                 }, deadline: deadline);
 
-                reservedItems.Add(item);
+                reservedItems.Add((item.ProductId, item.Quantity));
             }
         }
         catch (RpcException ex)
         {
-            // If any item fails (e.g. FAILED_PRECONDITION for Out of Stock), rollback previously reserved items in this order
-            foreach (var item in reservedItems)
-            {
-                try 
-                {
-                    await _inventoryClient.ReleaseQuantityAsync(new ReleaseQuantityRequest 
-                    { 
-                        ProductId = item.ProductId.ToString(), 
-                        Amount = item.Quantity,
-                        OrderId = order.Id.ToString()
-                    });
-                } 
-                catch 
-                { 
-                    // Log silent rollback failure 
-                }
-            }
+            // Rollback if gRPC fails
+            await RollbackReservationsAsync(reservedItems, order.Id.ToString());
             return (false, null, $"Inventory reservation failed: {ex.Status.Detail}");
         }
 
-        // 3. CREATION PHASE: Saga Pattern Commit[cite: 3]
+        // 3. CREATION PHASE: Saga Pattern Commit
         try
         {
             _dbContext.Orders.Add(order);
@@ -96,28 +80,17 @@ public class OrderService : IOrderService
         }
         catch (Exception)
         {
-            // If the PostgreSQL transaction fails locally, trigger gRPC ReleaseQuantity to rollback Node.js[cite: 3]
-            foreach (var item in order.Items)
-            {
-                try 
-                {
-                    await _inventoryClient.ReleaseQuantityAsync(new ReleaseQuantityRequest 
-                    { 
-                        ProductId = item.ProductId.ToString(), 
-                        Amount = item.Quantity,
-                        OrderId = order.Id.ToString()
-                    });
-                } 
-                catch 
-                { 
-                    // Log silent rollback failure 
-                }
-            }
+            // Rollback if local DB fails
+            await RollbackReservationsAsync(reservedItems, order.Id.ToString());
             return (false, null, "Failed to save order. Inventory reservation has been rolled back.");
         }
 
+        // FIXED: Added the missing return statement for the success path
+        return (true, MapToResponse(order), null);
+    }
+
     // --- SAGA ROLLBACK HELPER ---
-    private async Task RollbackReservationsAsync(List<(Guid ProductId, int Quantity)> itemsToRollback)
+    private async Task RollbackReservationsAsync(List<(Guid ProductId, int Quantity)> itemsToRollback, string orderId)
     {
         if (!itemsToRollback.Any()) return;
 
@@ -127,10 +100,12 @@ public class OrderService : IOrderService
         {
             try 
             {
-                await _inventoryClient.ReleaseQuantityAsync(new ReleaseRequest 
+                // FIXED: Changed to ReleaseQuantityRequest to match the proto contract
+                await _inventoryClient.ReleaseQuantityAsync(new ReleaseQuantityRequest 
                 { 
                     ProductId = item.ProductId.ToString(), 
-                    ReleaseQuantity = item.Quantity 
+                    Amount = item.Quantity, // FIXED: Changed ReleaseQuantity to Amount
+                    OrderId = orderId       // FIXED: Added missing OrderId for idempotency mapping
                 }, rollbackOptions); 
             }
             catch (RpcException)
