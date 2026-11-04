@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Modules.Orders.Decorators;
 using Modules.Orders.Interfaces;
 using Modules.Orders.Services;
+using Modules.Orders.Integration.Protos;
 
 namespace Modules.Orders;
 
@@ -23,6 +24,11 @@ public static class OrdersModuleExtensions
 
         services.AddFluentValidationAutoValidation();
         services.AddValidatorsFromAssemblyContaining<Validators.CreateOrderRequestValidator>();
+        // This tells .NET where the future Node.js server will be hosted
+        services.AddGrpcClient<InventoryService.InventoryServiceClient>(options =>
+        {
+            options.Address = new Uri("http://localhost:50051"); 
+        });
 
         return services;
     }
