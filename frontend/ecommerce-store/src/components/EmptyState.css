@@ -1,0 +1,4 @@
+.empty-state { padding: 48px 24px; text-align: center; }
+.empty-state h2 { margin: 0 0 8px; font-size: 16px; font-weight: 600; }
+.empty-state p { margin: 0; font-size: 13px; line-height: 1.5; color: var(--text-muted); }
+.empty-state .btn { margin-top: 18px; }

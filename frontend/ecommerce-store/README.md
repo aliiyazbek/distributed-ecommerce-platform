@@ -1,16 +1,52 @@
-# React + Vite
+# Store frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React and Vite app for the e-commerce platform. It talks to the backend through the Vite proxy, so the browser only sees one origin.
 
-Currently, two official plugins are available:
+## Run it
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+From the repository root, start the database and apply the migrations once:
 
-## React Compiler
+```sh
+docker compose up -d
+dotnet ef database update --project src/Modules/Users --startup-project src/Host --context UsersDbContext
+dotnet ef database update --project src/Modules/Products --startup-project src/Host --context ProductsDbContext
+dotnet ef database update --project src/Modules/Orders --startup-project src/Host --context OrdersDbContext
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Start the API:
 
-## Expanding the ESLint configuration
+```sh
+dotnet run --project src/Host --launch-profile http
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Then start the frontend:
+
+```sh
+cd frontend/ecommerce-store
+npm install
+npm run dev
+```
+
+The site opens on http://localhost:5173 and calls the API on http://localhost:5169.
+
+New accounts are customers. To make an admin, set `RoleId` to `1` for that user in `users."Users"`.
+
+## Scripts
+
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Starts the dev server |
+| `npm run build` | Builds for production into `dist` |
+| `npm run lint` | Runs ESLint |
+| `npm test` | Runs the tests in `tests` |
+
+## Structure
+
+| Folder | Contents |
+| --- | --- |
+| `src/pages/store` | Sign in, create account, products, product details, cart, my orders |
+| `src/pages/admin` | Add product, all orders |
+| `src/pages/shared` | Order details, access denied and not found |
+| `src/components` | Shared UI |
+| `src/context` | Session and cart state |
+| `src/services` | API calls and the logic around them |

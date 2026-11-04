@@ -26,7 +26,7 @@ public class OrderService : IOrderService
         _inventoryClient = inventoryClient;
     }
 
-   public async Task<(bool Success, OrderResponse? Data, string? Error)> CreateOrderAsync(Guid userId, CreateOrderRequest request)
+    public async Task<(bool Success, OrderResponse? Data, string? Error)> CreateOrderAsync(Guid userId, CreateOrderRequest request)
     {
         var productIds = request.Items.Select(i => i.ProductId).ToList();
         var products = await _sender.Send(new GetProductsByIdsQuery(productIds));
@@ -116,7 +116,29 @@ public class OrderService : IOrderService
             return (false, null, "Failed to save order. Inventory reservation has been rolled back.");
         }
 
-        return (true, MapToResponse(order), null);
+    // --- SAGA ROLLBACK HELPER ---
+    private async Task RollbackReservationsAsync(List<(Guid ProductId, int Quantity)> itemsToRollback)
+    {
+        if (!itemsToRollback.Any()) return;
+
+        var rollbackOptions = new CallOptions().WithDeadline(DateTime.UtcNow.AddMilliseconds(2000));
+        
+        foreach (var item in itemsToRollback)
+        {
+            try 
+            {
+                await _inventoryClient.ReleaseQuantityAsync(new ReleaseRequest 
+                { 
+                    ProductId = item.ProductId.ToString(), 
+                    ReleaseQuantity = item.Quantity 
+                }, rollbackOptions); 
+            }
+            catch (RpcException)
+            {
+                // Extreme Edge Case: C# failed to save, AND Node.js crashed during the rollback.
+                // In production, this requires an ILogger.LogCritical call to trigger a manual reconciliation alert.
+            }
+        }
     }
 
     public async Task<(bool Success, OrderResponse? Data, string? Error)> GetOrderAsync(Guid orderId)

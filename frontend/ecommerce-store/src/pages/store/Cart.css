@@ -1,0 +1,29 @@
+.cart-page { --page-width: 1000px; }
+.cart-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; align-items: start; gap: 20px; }
+.cart-lines { overflow: hidden; }
+.cart-line { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-bottom: 1px solid var(--border-soft); }
+.cart-line:last-child { border-bottom: 0; }
+.cart-line--short { background: #fff6f8; }
+.cart-line-image { display: block; flex-shrink: 0; width: 64px; height: 64px; border-radius: 10px; object-fit: cover; background: #f1efeb; }
+.cart-line-info { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.cart-line-name { padding: 4px 0; color: #35312e; font-size: 13px; font-weight: 500; text-decoration: none; overflow-wrap: anywhere; }
+.cart-line-name:hover { color: var(--brand); }
+.cart-line-price { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--text-soft); }
+.cart-line-problem { font-size: 11px; font-weight: 500; color: var(--danger); }
+.cart-line-total { flex-shrink: 0; min-width: 84px; text-align: right; font-family: ui-monospace, Consolas, monospace; font-size: 13px; font-weight: 600; color: #35312e; }
+.cart-line-remove { display: grid; place-items: center; flex-shrink: 0; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #8b857e; }
+.cart-line-remove:hover:not(:disabled) { background: #fff1f4; color: var(--danger); }
+.cart-line-remove svg { width: 16px; height: 16px; }
+.cart-summary { padding: 20px; }
+.cart-summary h2 { margin: 0 0 14px; font-size: 15px; font-weight: 600; }
+.cart-total { display: flex; align-items: baseline; justify-content: space-between; padding-top: 14px; margin-bottom: 16px; border-top: 1px solid var(--border-soft); font-size: 13px; }
+.cart-total strong { font-family: ui-monospace, Consolas, monospace; font-size: 21px; font-weight: 700; color: #35312e; }
+.cart-summary p { margin: 12px 0 0; text-align: center; font-size: 11px; color: var(--text-muted); }
+@media (max-width: 800px) {
+  .cart-layout { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 540px) {
+  .cart-line { flex-wrap: wrap; }
+  .cart-line-info { flex-basis: calc(100% - 80px); }
+  .cart-line-total { flex: 1; }
+}
