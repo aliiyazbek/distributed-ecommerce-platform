@@ -1,0 +1,30 @@
+.all-orders-page { --admin-content-width: 960px; }
+.orders-card {
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  box-shadow: var(--admin-shadow);
+  overflow: hidden;
+}
+.orders-scroll { overflow-x: auto; }
+.orders-scroll:focus-visible { outline-offset: -3px; }
+.orders-table { width: 100%; min-width: 850px; table-layout: fixed; border-collapse: collapse; text-align: left; }
+.order-number-column { width: 17%; }
+.customer-column { width: 14.5%; }
+.date-column { width: 23%; }
+.items-column { width: 10%; }
+.total-column { width: 11.5%; }
+.status-column { width: 17%; }
+.action-column { width: 7%; }
+.orders-table thead { background: #fbfaf8; }
+.orders-table thead th { height: 38px; padding: 10px 20px; color: #77716a; font-size: 10px; font-weight: 500; line-height: 1.4; text-transform: uppercase; white-space: nowrap; }
+.orders-table tbody th, .orders-table tbody td { height: 54px; padding: 12px 20px; border-top: 1px solid #efedeb; font-size: 12px; line-height: 1.4; white-space: nowrap; color: var(--admin-text-muted); }
+.orders-table .order-number, .orders-table .order-total { font-family: ui-monospace, Consolas, monospace; font-weight: 600; color: #35312e; font-variant-numeric: tabular-nums; }
+.customer-id { padding: 3px 6px; border-radius: 4px; background: #f5f4f2; color: #57514c; font-family: ui-monospace, Consolas, monospace; font-size: 10px; font-weight: 600; }
+.orders-table .order-action { padding: 0 12px; text-align: right; }
+.order-action a { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 36px; border-radius: 6px; color: #aaa5a0; }
+.order-action a:hover { background: #f3f0ff; color: #5035ff; }
+.order-action svg { width: 14px; height: 14px; }
+.orders-empty { padding: 48px 24px; text-align: center; }
+.orders-empty h2 { margin: 0 0 8px; font-size: 16px; font-weight: 600; }
+.orders-empty p { margin: 0; font-size: 13px; line-height: 1.5; color: var(--admin-text-muted); }

@@ -1,0 +1,14 @@
+:root { font-family: Inter, Arial, sans-serif; color: #242321; background: #faf9f7; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; color-scheme: light; }
+:root {
+  --admin-surface: #fff;
+  --admin-border: #e6e3df;
+  --admin-radius: 15px;
+  --admin-shadow: 0 1px 2px #25232003;
+  --admin-text-muted: #8b857e;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+button, input, select, textarea { font: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+:focus-visible { outline: 3px solid #a99bff; outline-offset: 3px; }
