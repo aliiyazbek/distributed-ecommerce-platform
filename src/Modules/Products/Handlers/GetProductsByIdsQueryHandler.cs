@@ -19,7 +19,7 @@ public class GetProductsByIdsQueryHandler : IRequestHandler<GetProductsByIdsQuer
         return await _context.Products
             .AsNoTracking()
             .Where(p => request.ProductIds.Contains(p.Id))
-            .Select(p => new ProductSummary(p.Id, p.Name, p.Price))
+            .Select(p => new ProductSummary(p.Id, p.Name, p.Price, p.AvailableQuantity))
             .ToListAsync(cancellationToken);
     }
 }

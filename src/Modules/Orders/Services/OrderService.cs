@@ -6,7 +6,7 @@ using Modules.Orders.Interfaces;
 using Modules.Orders.Persistence;
 using Shared.Events;
 using Shared.Queries;
-
+using Shared.Commands;
 namespace Modules.Orders.Services;
 
 public class OrderService : IOrderService
@@ -22,18 +22,32 @@ public class OrderService : IOrderService
         _publisher = publisher;
     }
 
-    public async Task<(bool Success, OrderResponse? Data, string? Error)> CreateOrderAsync(Guid userId, CreateOrderRequest request)
+   public async Task<(bool Success, OrderResponse? Data, string? Error)> CreateOrderAsync(Guid userId, CreateOrderRequest request)
     {
         var productIds = request.Items.Select(i => i.ProductId).ToList();
         var products = await _sender.Send(new GetProductsByIdsQuery(productIds));
         var productsById = products.ToDictionary(p => p.Id);
 
-        foreach (var productId in productIds)
+        // 1. VALIDATION PHASE: Ensure products exist and have sufficient stock
+        foreach (var item in request.Items)
         {
-            if (!productsById.ContainsKey(productId))
-                return (false, null, $"Product {productId} was not found.");
+            if (!productsById.TryGetValue(item.ProductId, out var product))
+                return (false, null, $"Product {item.ProductId} was not found.");
+
+            // Ensure your Product response DTO includes 'AvailableQuantity' for this to work
+            if (product.AvailableQuantity < item.Quantity)
+                return (false, null, $"Insufficient stock for '{product.Name}'. Requested: {item.Quantity}, Available: {product.AvailableQuantity}.");
         }
 
+        // 2. RESERVATION PHASE: Tell the Products module to deduct the stock
+        // We create a dictionary of ProductId -> Quantity to deduct
+        var stockToReserve = request.Items.ToDictionary(i => i.ProductId, i => i.Quantity);
+        
+        var reserveResult = await _sender.Send(new ReserveStockCommand(stockToReserve));
+        if (!reserveResult.Success)
+            return (false, null, reserveResult.Error); // Rollback if deduction fails
+
+        // 3. CREATION PHASE: Create and save the order
         var items = request.Items
             .Select(i => new OrderItem(i.ProductId, productsById[i.ProductId].Name, productsById[i.ProductId].Price, i.Quantity))
             .ToList();
