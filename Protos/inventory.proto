@@ -1,0 +1,38 @@
+    syntax = "proto3";
+
+// Defines the package name for Node.js
+package inventory;
+
+// Instructs the C# compiler where to place the generated client code
+option csharp_namespace = "Modules.Orders.Integration.Protos";
+
+// The Service Interface
+service InventoryService {
+  rpc CheckQuantity (CheckQuantityRequest) returns (QuantityResponse);
+  rpc ReserveQuantity (ReserveRequest) returns (ActionResponse);
+  rpc ReleaseQuantity (ReleaseRequest) returns (ActionResponse);
+}
+
+// Data Transfer Objects (Messages)
+message CheckQuantityRequest {
+  string product_id = 1;
+}
+
+message QuantityResponse {
+  int32 available_quantity = 1;
+}
+
+message ReserveRequest {
+  string product_id = 1;
+  int32 requested_quantity = 2;
+}
+
+message ReleaseRequest {
+  string product_id = 1;
+  int32 release_quantity = 2;
+}
+
+message ActionResponse {
+  bool success = 1;
+  string error_message = 2;
+}

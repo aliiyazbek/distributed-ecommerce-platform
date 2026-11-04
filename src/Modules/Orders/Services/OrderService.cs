@@ -7,6 +7,8 @@ using Modules.Orders.Persistence;
 using Shared.Events;
 using Shared.Queries;
 using Shared.Commands;
+
+using Modules.Orders.Integration.Protos;
 namespace Modules.Orders.Services;
 
 public class OrderService : IOrderService
@@ -14,12 +16,14 @@ public class OrderService : IOrderService
     private readonly OrdersDbContext _dbContext;
     private readonly ISender _sender;
     private readonly IPublisher _publisher;
+    private readonly InventoryService.InventoryServiceClient _inventoryClient;
 
-    public OrderService(OrdersDbContext dbContext, ISender sender, IPublisher publisher)
+    public OrderService(OrdersDbContext dbContext, ISender sender, IPublisher publisher, InventoryService.InventoryServiceClient inventoryClient)
     {
         _dbContext = dbContext;
         _sender = sender;
         _publisher = publisher;
+        _inventoryClient = inventoryClient;
     }
 
    public async Task<(bool Success, OrderResponse? Data, string? Error)> CreateOrderAsync(Guid userId, CreateOrderRequest request)
