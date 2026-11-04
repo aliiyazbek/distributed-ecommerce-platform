@@ -22,6 +22,8 @@ public class OrdersController : BaseController
     }
 
     [HttpPost]
+    [Authorize(Roles = "Customer")]
+
     public async Task<IActionResult> CreateOrder([FromBody] CreateOrderRequest request)
     {
         var (success, data, error) = await _orderService.CreateOrderAsync(GetUserId(), request);
@@ -33,6 +35,8 @@ public class OrdersController : BaseController
     }
 
     [HttpGet]
+    [Authorize(Roles = "Customer")]
+
     public async Task<IActionResult> GetOrders()
     {
         var orders = await _orderService.GetOrdersAsync(User.IsInRole("Admin") ? null : GetUserId());
