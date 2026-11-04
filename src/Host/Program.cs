@@ -11,6 +11,7 @@ using Modules.Products.Persistence;
 using Modules.Products;
 using Modules.Orders;
 using Modules.Orders.Persistence;
+using Modules.Notifications; // Added Notifications using statement
 using Shared;
 using Modules.Users.Interfaces;
 
@@ -80,10 +81,12 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit = 0
             }));
 });
+
 // 7. Register Modules & MediatR
 builder.Services.AddUsersModule(); 
-builder.Services.AddProductsModule(connectionString); // <-- Make sure this line exists!
+builder.Services.AddProductsModule(connectionString); 
 builder.Services.AddOrdersModule();
+builder.Services.AddNotificationsModule(); // <-- Added Notifications module registration
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(AppDomain.CurrentDomain.GetAssemblies()));
 var app = builder.Build();
 

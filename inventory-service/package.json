@@ -11,6 +11,9 @@
   "description": "",
   "dependencies": {
     "@grpc/grpc-js": "^1.14.7",
-    "@grpc/proto-loader": "^0.8.1"
-  }
+    "@grpc/proto-loader": "^0.8.1",
+    "dotenv": "^18.0.9",
+    "pg": "^8.23.1"
+  },
+  "type": "commonjs"
 }

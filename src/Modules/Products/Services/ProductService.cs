@@ -1,9 +1,11 @@
+using MediatR;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Modules.Products.Contracts;
 using Modules.Products.Entities;
 using Modules.Products.Interfaces;
 using Modules.Products.Persistence;
+using Shared.Events;
 
 namespace Modules.Products.Services;
 
@@ -11,11 +13,13 @@ public class ProductService : IProductService
 {
     private readonly ProductsDbContext _context;
     private readonly IWebHostEnvironment _env;
+    private readonly IMediator _mediator;
 
-    public ProductService(ProductsDbContext context, IWebHostEnvironment env)
+    public ProductService(ProductsDbContext context, IWebHostEnvironment env, IMediator mediator)
     {
         _context = context;
         _env = env;
+        _mediator = mediator;
     }
 
     public async Task<ProductResponse> CreateProductAsync(CreateProductRequest request)
@@ -39,12 +43,15 @@ public class ProductService : IProductService
             Description = request.Description,
             Price = request.Price,
             Category = request.Category,
-            AvailableQuantity = request.AvailableQuantity,
+            CreatedAt = DateTime.UtcNow,
             ImageUrl = imageUrl
         };
 
         _context.Products.Add(product);
         await _context.SaveChangesAsync();
+
+        // Broadcast the event to trigger the Notifications module
+        await _mediator.Publish(new ProductCreatedIntegrationEvent(product.Id, product.Name, product.Category, product.Price));
 
         return MapToResponse(product);
     }
@@ -74,5 +81,5 @@ public class ProductService : IProductService
     }
 
     private static ProductResponse MapToResponse(Product product) => 
-        new(product.Id, product.Name, product.Description, product.Price, product.Category, product.ImageUrl, product.AvailableQuantity, product.CreatedAt);
+        new(product.Id, product.Name, product.Description, product.Price, product.Category, product.ImageUrl, product.CreatedAt);
 }
