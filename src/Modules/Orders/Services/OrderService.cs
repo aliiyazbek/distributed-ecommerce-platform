@@ -1,3 +1,4 @@
+using Grpc.Core;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Modules.Orders.Contracts;
@@ -6,7 +7,6 @@ using Modules.Orders.Interfaces;
 using Modules.Orders.Persistence;
 using Shared.Events;
 using Shared.Queries;
-using Shared.Commands;
 
 using Modules.Orders.Integration.Protos;
 namespace Modules.Orders.Services;
@@ -32,33 +32,89 @@ public class OrderService : IOrderService
         var products = await _sender.Send(new GetProductsByIdsQuery(productIds));
         var productsById = products.ToDictionary(p => p.Id);
 
-        // 1. VALIDATION PHASE: Ensure products exist and have sufficient stock
+        // 1. VALIDATION PHASE: Ensure products exist in the catalog
         foreach (var item in request.Items)
         {
             if (!productsById.TryGetValue(item.ProductId, out var product))
                 return (false, null, $"Product {item.ProductId} was not found.");
-
-            // Ensure your Product response DTO includes 'AvailableQuantity' for this to work
-            if (product.AvailableQuantity < item.Quantity)
-                return (false, null, $"Insufficient stock for '{product.Name}'. Requested: {item.Quantity}, Available: {product.AvailableQuantity}.");
         }
 
-        // 2. RESERVATION PHASE: Tell the Products module to deduct the stock
-        // We create a dictionary of ProductId -> Quantity to deduct
-        var stockToReserve = request.Items.ToDictionary(i => i.ProductId, i => i.Quantity);
-        
-        var reserveResult = await _sender.Send(new ReserveStockCommand(stockToReserve));
-        if (!reserveResult.Success)
-            return (false, null, reserveResult.Error); // Rollback if deduction fails
-
-        // 3. CREATION PHASE: Create and save the order
+        // We pre-generate the order to establish the OrderId. 
+        // This acts as our Idempotency Key for the gRPC requests.
         var items = request.Items
             .Select(i => new OrderItem(i.ProductId, productsById[i.ProductId].Name, productsById[i.ProductId].Price, i.Quantity))
             .ToList();
 
         var order = new Order(userId, items);
-        _dbContext.Orders.Add(order);
-        await _dbContext.SaveChangesAsync();
+
+        // 2. RESERVATION PHASE: Network Call to Node.js Microservice
+        var deadline = DateTime.UtcNow.AddMilliseconds(2000); // Strict 2000ms resiliency timeout[cite: 3]
+        var reservedItems = new List<OrderItem>();
+        
+        try
+        {
+            foreach (var item in order.Items)
+            {
+                // Replaces the old monolith MediatR command
+                await _inventoryClient.ReserveQuantityAsync(new ReserveQuantityRequest 
+                { 
+                    ProductId = item.ProductId.ToString(),
+                    Amount = item.Quantity,
+                    OrderId = order.Id.ToString() // Enforces idempotency during network retries[cite: 3]
+                }, deadline: deadline);
+
+                reservedItems.Add(item);
+            }
+        }
+        catch (RpcException ex)
+        {
+            // If any item fails (e.g. FAILED_PRECONDITION for Out of Stock), rollback previously reserved items in this order
+            foreach (var item in reservedItems)
+            {
+                try 
+                {
+                    await _inventoryClient.ReleaseQuantityAsync(new ReleaseQuantityRequest 
+                    { 
+                        ProductId = item.ProductId.ToString(), 
+                        Amount = item.Quantity,
+                        OrderId = order.Id.ToString()
+                    });
+                } 
+                catch 
+                { 
+                    // Log silent rollback failure 
+                }
+            }
+            return (false, null, $"Inventory reservation failed: {ex.Status.Detail}");
+        }
+
+        // 3. CREATION PHASE: Saga Pattern Commit[cite: 3]
+        try
+        {
+            _dbContext.Orders.Add(order);
+            await _dbContext.SaveChangesAsync();
+        }
+        catch (Exception)
+        {
+            // If the PostgreSQL transaction fails locally, trigger gRPC ReleaseQuantity to rollback Node.js[cite: 3]
+            foreach (var item in order.Items)
+            {
+                try 
+                {
+                    await _inventoryClient.ReleaseQuantityAsync(new ReleaseQuantityRequest 
+                    { 
+                        ProductId = item.ProductId.ToString(), 
+                        Amount = item.Quantity,
+                        OrderId = order.Id.ToString()
+                    });
+                } 
+                catch 
+                { 
+                    // Log silent rollback failure 
+                }
+            }
+            return (false, null, "Failed to save order. Inventory reservation has been rolled back.");
+        }
 
         return (true, MapToResponse(order), null);
     }

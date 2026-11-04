@@ -8,15 +8,7 @@ public class Product
     public decimal Price { get; set; }
     public string Category { get; set; } = string.Empty;
     public string ImageUrl { get; set; } = string.Empty; // For storing the uploaded image path
-    public int AvailableQuantity { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
 
-    public void UpdateQuantity(int newQuantity)
-    {
-        if (newQuantity < 0)
-            throw new InvalidOperationException("Stock quantity cannot be negative.");
-            
-        AvailableQuantity = newQuantity;
-    }
 }
