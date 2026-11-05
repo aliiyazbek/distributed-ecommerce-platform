@@ -17,7 +17,7 @@ export class ApiError extends Error {
   }
 
   get unreachable() {
-    return this.status === 0
+    return this.status === 0 || this.status === 503
   }
 }
 
@@ -51,5 +51,5 @@ export async function request(path, { method = 'GET', body, signal, timeout = de
   if (response.ok) return data
   if (response.status >= 500 && !data) throw new ApiError(0)
   if (response.status === 401 && token) handleUnauthorized()
-  throw new ApiError(response.status, data?.message ?? data?.title, data?.errors)
+  throw new ApiError(response.status, data?.message ?? data?.detail ?? data?.title, data?.errors)
 }

@@ -84,6 +84,14 @@ test('treats a dead server or a failed connection as unreachable', async () => {
   await assert.rejects(request('/x'), error => error.status === 500 && !error.unreachable)
 })
 
+test('treats a 503 as unreachable with or without a body', async () => {
+  globalThis.fetch = respond(503, null, null)
+  await assert.rejects(request('/x'), error => error.unreachable)
+
+  globalThis.fetch = respond(503, '{"title":"Service Unavailable","detail":"The inventory service is unavailable."}', 'application/problem+json')
+  await assert.rejects(request('/x'), error => error.unreachable && error.message === 'The inventory service is unavailable.')
+})
+
 test('reports an expired session only when a token was sent', async () => {
   let calls = 0
   setUnauthorizedHandler(() => calls++)
@@ -130,6 +138,7 @@ test('reads both stock error messages from the backend', () => {
 test('order failures use the brief messages', () => {
   assert.equal(orderFailure(new ApiError(400, "Insufficient stock for 'Lamp'. Requested: 9, Available: 3.")).message, 'Not enough stock for Lamp. Your order was not placed.')
   assert.equal(orderFailure(new ApiError(0)).message, "We couldn't reach the inventory service. Your order was not placed. Please try again in a moment.")
+  assert.equal(orderFailure(new ApiError(503, 'The inventory service is unavailable.')).message, "We couldn't reach the inventory service. Your order was not placed. Please try again in a moment.")
   assert.equal(orderFailure(new ApiError(500)).message, 'Something went wrong. Your order was not placed. Please try again.')
 })
 

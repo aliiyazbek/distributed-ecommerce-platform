@@ -9,7 +9,7 @@ import { useCart } from '../../context/cart-context'
 import useLoad from '../../hooks/useLoad'
 import { routes } from '../../navigation/routes'
 import { formatMoney } from '../../services/orderService.js'
-import { getProduct, getStock } from '../../services/productService.js'
+import { getProduct } from '../../services/productService.js'
 import StatusPage from '../shared/StatusPage'
 import './ProductDetails.css'
 
@@ -54,12 +54,15 @@ export default function ProductDetails() {
   const location = useLocation()
   const { session } = useAuth()
   const loadProduct = useCallback(signal => getProduct(id, signal), [id])
-  const loadStock = useCallback(signal => getStock(id, signal), [id])
   const details = useLoad(loadProduct)
-  const stock = useLoad(loadStock)
   const [productAdded, setProductAdded] = useState(Boolean(location.state?.added))
   const product = details.data ?? location.state?.product
   const status = details.error?.status
+  const stock = {
+    loading: details.loading,
+    error: details.error || details.data?.availableQuantity == null,
+    data: details.data?.availableQuantity,
+  }
 
   if (status === 401) return <Navigate to={routes.signIn} state={{ from: location }} replace />
   if (status === 400 || status === 404) return <StatusPage kind="not-found" message="Product not found." />
