@@ -12,11 +12,6 @@ export function getProducts({ category, page }, signal) {
 
 export const getProduct = (id, signal) => request(`/api/v1/products/${encodeURIComponent(id)}`, { signal })
 
-export async function getStock(id, signal) {
-  const product = await getProduct(id, signal)
-  return product.availableQuantity
-}
-
 export function createProduct({ name, description, price, category, stock, image }) {
   const body = new FormData()
   body.append('Name', name)
