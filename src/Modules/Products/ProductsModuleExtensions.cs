@@ -7,6 +7,9 @@ using Modules.Products.Decorators;
 using Modules.Products.Interfaces;
 using Modules.Products.Persistence;
 using Modules.Products.Services;
+using Modules.Orders.Integration.Protos; // Add the namespace generated from your proto file
+
+
 
 namespace Modules.Products;
 
@@ -16,6 +19,12 @@ public static class ProductsModuleExtensions
     {
         services.AddDbContext<ProductsDbContext>(options =>
             options.UseNpgsql(connectionString, b => b.MigrationsAssembly("Modules.Products")));
+
+        // NEW: Register the gRPC client for the Inventory Service
+        services.AddGrpcClient<InventoryService.InventoryServiceClient>("ProductsInventoryClient", options =>
+        {
+            options.Address = new Uri("http://127.0.0.1:50051"); 
+        });
 
         // Register the core service as its concrete type
         services.AddScoped<ProductService>();

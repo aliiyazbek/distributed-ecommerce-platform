@@ -10,6 +10,12 @@ public class CreateProductRequestValidator : AbstractValidator<CreateProductRequ
         RuleFor(x => x.Name).NotEmpty().WithMessage("Product name is required.");
         RuleFor(x => x.Price).GreaterThan(0).WithMessage("Price must be greater than zero.");
         RuleFor(x => x.Category).NotEmpty().WithMessage("Category is required.");
+        
+        // NEW: Ensure stock initialization is valid
+        RuleFor(x => x.AvailableQuantity)
+            .GreaterThanOrEqualTo(0)
+            .WithMessage("Available quantity cannot be negative.");
+            
         RuleFor(x => x.Image).NotNull().WithMessage("A product image is required.");
     }
 }

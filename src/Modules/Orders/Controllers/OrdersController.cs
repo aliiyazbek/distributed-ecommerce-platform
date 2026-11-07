@@ -35,7 +35,6 @@ public class OrdersController : BaseController
     }
 
     [HttpGet]
-    [Authorize(Roles = "Customer")]
 
     public async Task<IActionResult> GetOrders()
     {
@@ -44,6 +43,7 @@ public class OrdersController : BaseController
     }
 
     [HttpGet("{id}")]
+
     public async Task<IActionResult> GetOrder(Guid id)
     {
         var (success, data, error) = await _orderService.GetOrderAsync(id);
