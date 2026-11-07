@@ -135,6 +135,7 @@ server.addService(inventoryProto.InventoryService.service, {
     checkQuantity,
     reserveQuantity,
     releaseQuantity,
+    InitializeStock: initializeStock
 });
 
 initDb().then(() => {
@@ -160,4 +161,29 @@ function gracefulShutdown() {
             process.exit(0);
         });
     });
+}
+
+async function initializeStock(call, callback) {
+    const { ProductId, InitialQuantity } = call.request;
+    const client = await pool.connect();
+    
+    console.log(`[gRPC] InitializeStock received for Product: ${ProductId} with Qty: ${InitialQuantity}`);
+
+    try {
+        await client.query('BEGIN');
+        
+        await client.query(
+            'INSERT INTO inventory.stock (product_id, available_quantity) VALUES ($1, $2)',
+            [ProductId, InitialQuantity]
+        );
+        
+        await client.query('COMMIT');
+        callback(null, { Success: true, Message: "Stock initialized successfully" });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error(`[gRPC] InitializeStock error:`, err.message);
+        callback({ code: grpc.status.INTERNAL, details: err.message });
+    } finally {
+        client.release();
+    }
 }

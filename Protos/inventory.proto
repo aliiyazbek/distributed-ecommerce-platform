@@ -9,6 +9,13 @@ service InventoryService {
   rpc CheckQuantity (CheckQuantityRequest) returns (QuantityResponse);
   rpc ReserveQuantity (ReserveQuantityRequest) returns (ReservationResponse);
   rpc ReleaseQuantity (ReleaseQuantityRequest) returns (ReservationResponse);
+
+  rpc InitializeStock (InitializeRequest) returns (ReservationResponse);
+}
+
+message InitializeRequest {
+  string ProductId = 1;
+  int32 InitialQuantity = 2;
 }
 
 message CheckQuantityRequest {

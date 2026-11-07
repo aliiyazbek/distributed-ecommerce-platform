@@ -25,9 +25,9 @@ public static class OrdersModuleExtensions
         services.AddFluentValidationAutoValidation();
         services.AddValidatorsFromAssemblyContaining<Validators.CreateOrderRequestValidator>();
         // This tells .NET where the future Node.js server will be hosted
-        services.AddGrpcClient<InventoryService.InventoryServiceClient>(options =>
+        services.AddGrpcClient<InventoryService.InventoryServiceClient>("OrdersInventoryClient",options =>
         {
-            options.Address = new Uri("http://localhost:50051"); 
+            options.Address = new Uri("http://127.0.0.1:50051"); 
         });
 
         return services;
