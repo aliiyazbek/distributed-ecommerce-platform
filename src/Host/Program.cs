@@ -82,6 +82,14 @@ builder.Services.AddRateLimiter(options =>
             }));
 });
 
+// 6b. Redis distributed cache (Requirement 3). abortConnect=false => app still starts if Redis is down;
+// ProductCache then falls back to the database.
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379,abortConnect=false";
+    options.InstanceName = "ecommerce:";
+});
+
 // 7. Register Modules & MediatR
 builder.Services.AddUsersModule(); 
 builder.Services.AddProductsModule(connectionString); 
