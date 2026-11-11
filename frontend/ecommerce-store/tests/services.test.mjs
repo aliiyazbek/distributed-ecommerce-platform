@@ -3,7 +3,7 @@ import { afterEach, test } from 'node:test'
 import { ApiError, request, setUnauthorizedHandler } from '../src/services/apiClient.js'
 import { authErrorMessage } from '../src/services/authService.js'
 import { addLine, countItems, removeLine, setLineQuantity } from '../src/services/cartService.js'
-import { formatMoney, lineTotal, orderFailure, orderTotal, parseStockError, shortId, toOrder } from '../src/services/orderService.js'
+import { formatMoney, getOrders, lineTotal, orderFailure, orderTotal, parseStockError, shortId, toOrder } from '../src/services/orderService.js'
 import { toSession } from '../src/services/session.js'
 import { mapApiErrors, validateProduct } from '../src/pages/admin/productForm.js'
 import { validateAccount } from '../src/pages/store/accountForm.js'
@@ -127,6 +127,29 @@ test('maps an order from the API', () => {
   assert.equal(order.lastUpdated, null)
   assert.deepEqual(order.items, [{ productId: 'p1', name: 'Lamp', unitPrice: 24.99, quantity: 2 }])
   assert.equal(shortId('abc-def'), 'ABCDEF')
+})
+
+test('order pagination preserves the server lookahead flag even for a full final page', async () => {
+  const order = {
+    id: 'd15280b9-030f-461f-a6f5-f0d3adcfd983',
+    userId: '7726a55d-965b-4477-a488-d11afd46db70',
+    status: 'Pending', totalPrice: 10, createdAt: '2026-11-04T19:53:44Z',
+    items: [],
+  }
+  const items = Array.from({ length: 20 }, () => order)
+  for (const hasNextPage of [true, false]) {
+    globalThis.fetch = (path, options) => {
+      assert.equal(path, '/api/v1/orders?page=2&pageSize=20')
+      assert.equal(options.method, 'GET')
+      return respond(200, JSON.stringify({ items, hasNextPage }))()
+    }
+    const result = await getOrders(undefined, 2)
+    assert.equal(result.items.length, 20)
+    assert.equal(result.items[0].orderNumber, 'D15280B9')
+    assert.equal(result.hasNextPage, hasNextPage)
+  }
+  globalThis.fetch = respond(200, JSON.stringify({ items: [], hasNextPage: false }))
+  assert.deepEqual(await getOrders(undefined, 3), { items: [], hasNextPage: false })
 })
 
 test('reads both stock error messages from the backend', () => {

@@ -36,11 +36,26 @@ public class OrdersController : BaseController
 
     [HttpGet]
 
-    public async Task<IActionResult> GetOrders()
+public async Task<IActionResult> GetOrders(
+    [FromQuery] int page = 1,
+    [FromQuery] int pageSize = 20)
+{
+    if (page < 1 || pageSize < 1 || pageSize > 100 ||
+        (long)(page - 1) * pageSize > int.MaxValue)
     {
-        var orders = await _orderService.GetOrdersAsync(User.IsInRole("Admin") ? null : GetUserId());
-        return Ok(orders);
+        return BadRequest(new
+        {
+            Message = "Invalid pagination parameters."
+        });
     }
+
+    var result = await _orderService.GetOrdersAsync(
+        User.IsInRole("Admin") ? null : GetUserId(),
+        page,
+        pageSize);
+
+    return Ok(result);
+}
 
     [HttpGet("{id}")]
 

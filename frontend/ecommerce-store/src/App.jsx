@@ -18,7 +18,7 @@ export default function App() {
       <Route element={<Layout />}>
         <Route index element={<Products />} />
         <Route path="products/:id" element={<ProductDetails />} />
-        {/* <Route path="cart" element={<Cart />} /> */}
+        { <Route path="cart" element={<Cart />} /> }
         <Route path="signin" element={<SignIn />} />
         <Route path="signup" element={<SignUp />} />
         <Route element={<RequireRole />}>

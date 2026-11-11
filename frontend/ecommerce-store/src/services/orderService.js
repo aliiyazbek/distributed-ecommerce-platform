@@ -28,9 +28,13 @@ export function toOrder(order) {
   }
 }
 
-export async function getOrders(signal) {
-  const orders = await request('/api/v1/orders', { signal })
-  return orders.map(toOrder)
+export async function getOrders(signal, page = 1, pageSize = 20) {
+  const result = await request(
+    `/api/v1/orders?page=${page}&pageSize=${pageSize}`,
+    { signal }
+  )
+
+  return { items: result.items.map(toOrder), hasNextPage: result.hasNextPage }
 }
 
 export async function getOrder(id, signal) {
