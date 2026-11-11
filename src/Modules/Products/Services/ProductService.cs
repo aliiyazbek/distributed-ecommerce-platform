@@ -2,6 +2,7 @@ using Grpc.Core;
 using MediatR;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
+using Modules.Products.Caching;
 using Modules.Products.Contracts;
 using Modules.Products.Entities;
 using Modules.Products.Interfaces;
@@ -19,14 +20,17 @@ public class ProductService : IProductService
     private readonly IWebHostEnvironment _env;
     private readonly IMediator _mediator;
     private readonly InventoryService.InventoryServiceClient _inventoryClient;
+    private readonly IProductCache _cache;
 
     // Inject the gRPC client
     public ProductService(
         ProductsDbContext context, 
         IWebHostEnvironment env, 
         IMediator mediator,
-        InventoryService.InventoryServiceClient inventoryClient)
+        InventoryService.InventoryServiceClient inventoryClient,
+        IProductCache cache)
     {
+        _cache = cache;
         _context = context;
         _env = env;
         _mediator = mediator;
@@ -91,45 +95,91 @@ public class ProductService : IProductService
             throw new Exception($"Inventory service unavailable. Product creation aborted. Status: {ex.Status.StatusCode}");
         }
 
+        // Cache: a new product must appear in listings immediately
+        await _cache.InvalidateAsync(product.Id);
+
         // 3. Broadcast the event to trigger the Notifications module
         await _mediator.Publish(new ProductCreatedIntegrationEvent(product.Id, product.Name, product.Category, product.Price));
 
         return MapToResponse(product, request.AvailableQuantity);
     }
 
-    public async Task<ProductResponse?> GetProductAsync(Guid id)
+    public async Task<ProductResponse?> UpdateProductAsync(Guid id, UpdateProductRequest request)
     {
         var product = await _context.Products.FindAsync(id);
         if (product == null) return null;
 
-        int availableQuantity = await FetchQuantityFromInventoryAsync(id);
-        return MapToResponse(product, availableQuantity);
+        product.Name = request.Name;
+        product.Description = request.Description;
+        product.Price = request.Price;
+        product.Category = request.Category;
+
+        if (request.Image != null && request.Image.Length > 0)
+        {
+            var webRoot = _env.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot");
+            var uploadsFolder = Path.Combine(webRoot, "images");
+            Directory.CreateDirectory(uploadsFolder);
+            var uniqueFileName = $"{Guid.NewGuid()}_{Path.GetFileName(request.Image.FileName)}";
+            using var fileStream = new FileStream(Path.Combine(uploadsFolder, uniqueFileName), FileMode.Create);
+            await request.Image.CopyToAsync(fileStream);
+            product.ImageUrl = $"/images/{uniqueFileName}";
+        }
+
+        await _context.SaveChangesAsync();
+
+        // Write-invalidate: the DB is already updated, so drop the stale entries now.
+        // The very next GET misses, reloads from the DB and sees the new data.
+        await _cache.InvalidateAsync(id);
+
+        return MapToResponse(product, await FetchQuantityFromInventoryAsync(id));
     }
-public async Task<PaginatedProductResponse> GetProductsAsync(string? category, int page, int pageSize)
+
+    public async Task<ProductResponse?> GetProductAsync(Guid id)
     {
-        var query = _context.Products.AsQueryable();
-        if (!string.IsNullOrWhiteSpace(category))
+        var cached = await _cache.GetProductAsync(id);
+        if (cached == null)
         {
-            query = query.Where(p => p.Category.ToLower() == category.ToLower());
+            var product = await _context.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+            if (product == null) return null;
+
+            cached = ToCached(product);
+            await _cache.SetProductAsync(cached);
         }
 
-        var totalItems = await query.CountAsync();
-        var products = await query.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
-        
-        var productResponses = new List<ProductResponse>();
-        
-        // Fetch quantities for the current page of products
-        foreach (var product in products)
+        // Stock is never cached: always read live from the inventory service.
+        int availableQuantity = await FetchQuantityFromInventoryAsync(id);
+        return MapToResponse(cached, availableQuantity);
+    }
+
+    public async Task<PaginatedProductResponse> GetProductsAsync(string? category, int page, int pageSize)
+    {
+        var pageData = await _cache.GetPageAsync(category, page, pageSize);
+        if (pageData == null)
         {
-            int qty = await FetchQuantityFromInventoryAsync(product.Id);
-            productResponses.Add(MapToResponse(product, qty));
+            var query = _context.Products.AsNoTracking().AsQueryable();
+            if (!string.IsNullOrWhiteSpace(category))
+            {
+                query = query.Where(p => p.Category.ToLower() == category.ToLower());
+            }
+
+            var totalItems = await query.CountAsync();
+            var products = await query
+                .OrderBy(p => p.CreatedAt).ThenBy(p => p.Id) // stable order so pages are cacheable and consistent
+                .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+
+            pageData = new CachedProductPage(
+                totalItems, page, pageSize,
+                (int)Math.Ceiling(totalItems / (double)pageSize),
+                products.Select(ToCached).ToList());
+
+            await _cache.SetPageAsync(category, page, pageSize, pageData);
         }
 
-        return new PaginatedProductResponse(
-            totalItems, page, pageSize, 
-            (int)Math.Ceiling(totalItems / (double)pageSize), 
-            productResponses
-        );
+        // Fetch live quantities concurrently (previously one sequential gRPC call per product)
+        var quantities = await Task.WhenAll(pageData.Items.Select(i => FetchQuantityFromInventoryAsync(i.Id)));
+        var items = pageData.Items.Select((i, idx) => MapToResponse(i, quantities[idx])).ToList();
+
+        return new PaginatedProductResponse(pageData.TotalItems, pageData.Page, pageData.PageSize, pageData.TotalPages, items);
     }
 
     // Helper method to keep your code clean
@@ -151,6 +201,12 @@ public async Task<PaginatedProductResponse> GetProductsAsync(string? category, i
             return 0; 
         }
     }
+    private static CachedProduct ToCached(Product p) =>
+        new(p.Id, p.Name, p.Description, p.Price, p.Category, p.ImageUrl, p.CreatedAt);
+
+    private static ProductResponse MapToResponse(CachedProduct p, int quantity) =>
+        new(p.Id, p.Name, p.Description, p.Price, p.Category, quantity, p.ImageUrl, p.CreatedAt);
+
     private static ProductResponse MapToResponse(Product product, int quantity) => 
         new(product.Id, product.Name, product.Description, product.Price, product.Category, quantity, product.ImageUrl, product.CreatedAt);
 }

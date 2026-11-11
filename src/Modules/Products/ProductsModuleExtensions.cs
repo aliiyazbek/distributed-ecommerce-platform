@@ -3,6 +3,7 @@ using FluentValidation.AspNetCore;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Modules.Products.Caching;
 using Modules.Products.Decorators;
 using Modules.Products.Interfaces;
 using Modules.Products.Persistence;
@@ -25,6 +26,9 @@ public static class ProductsModuleExtensions
         {
             options.Address = new Uri("http://127.0.0.1:50051"); 
         });
+
+        services.AddHttpContextAccessor();
+        services.AddScoped<IProductCache, ProductCache>();
 
         // Register the core service as its concrete type
         services.AddScoped<ProductService>();

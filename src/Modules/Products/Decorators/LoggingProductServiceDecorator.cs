@@ -29,6 +29,12 @@ public class LoggingProductServiceDecorator : IProductService
         return result;
     }
 
+    public async Task<ProductResponse?> UpdateProductAsync(Guid id, UpdateProductRequest request)
+    {
+        _logger.LogInformation("Updating product {ProductId}", id);
+        return await _inner.UpdateProductAsync(id, request);
+    }
+
     public async Task<ProductResponse?> GetProductAsync(Guid id)
     {
         _logger.LogInformation("Fetching product with ID {ProductId}", id);
