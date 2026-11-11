@@ -128,20 +128,33 @@ public class OrderService : IOrderService
 
         return (true, MapToResponse(order), null);
     }
+public async Task<PaginatedOrdersResponse> GetOrdersAsync(
+    Guid? userId,
+    int page = 1,
+    int pageSize = 20)
+{
+    if (page < 1 || pageSize < 1 || pageSize > 100)
+        throw new ArgumentOutOfRangeException(
+            nameof(page), "Invalid pagination parameters.");
 
-    public async Task<List<OrderResponse>> GetOrdersAsync(Guid? userId)
-    {
-        IQueryable<Order> query = _dbContext.Orders
-            .AsNoTracking()
-            .Include(o => o.Items);
+    IQueryable<Order> query = _dbContext.Orders
+        .AsNoTracking()
+        .Include(o => o.Items);
 
-        if (userId.HasValue)
-            query = query.Where(o => o.UserId == userId.Value);
+    if (userId.HasValue)
+        query = query.Where(o => o.UserId == userId.Value);
 
-        var orders = await query.OrderByDescending(o => o.CreatedAt).ToListAsync();
-        return orders.Select(MapToResponse).ToList();
-    }
+    var orders = await query
+        .OrderByDescending(o => o.CreatedAt)
+        .ThenByDescending(o => o.Id)
+        .Skip((page - 1) * pageSize)
+        .Take(pageSize + 1)
+        .ToListAsync();
 
+    return new PaginatedOrdersResponse(
+        orders.Take(pageSize).Select(MapToResponse).ToList(),
+        orders.Count > pageSize);
+}
     public async Task<(bool Success, OrderResponse? Data, string? Error)> UpdateOrderStatusAsync(Guid orderId, UpdateOrderStatusRequest request)
     {
         var order = await _dbContext.Orders

@@ -31,12 +31,12 @@ export default function Navbar() {
       </Link>
       <nav className="nav-links" aria-label="Main navigation">
         <Link to={routes.products} className={onProducts ? 'active' : undefined} aria-current={onProducts ? 'page' : undefined}>Products</Link>
-        {/* {!isAdmin && (
-          // <NavLink to={routes.cart}>
-          //   Cart <span className="nav-count">{count}</span>
-          // </NavLink>
-        )} */}
-        {session?.role === 'Customer' && <NavLink to={routes.myOrders}>My orders</NavLink>}
+          {!isAdmin && (
+    <NavLink to={routes.cart}>
+      Cart <span className="nav-count">{count}</span>
+    </NavLink>
+  )}  
+          {session?.role === 'Customer' && <NavLink to={routes.myOrders}>My orders</NavLink>}
         {isAdmin && <NavLink to={routes.addProduct}>Add product</NavLink>}
         {isAdmin && <NavLink to={routes.allOrders} className={({ isActive }) => (isActive || onOrder ? 'active' : undefined)}>All orders</NavLink>}
         {!session && <NavLink to={routes.signIn}>Sign in</NavLink>}

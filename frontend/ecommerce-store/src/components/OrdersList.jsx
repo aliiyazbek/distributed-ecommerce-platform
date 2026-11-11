@@ -5,6 +5,7 @@ import useLoad from '../hooks/useLoad'
 import { routes } from '../navigation/routes'
 import { formatMoney, getOrders } from '../services/orderService.js'
 import './OrdersList.css'
+import { useCallback, useState } from 'react'
 
 function OrdersSkeleton() {
   return (
@@ -15,7 +16,16 @@ function OrdersSkeleton() {
 }
 
 export default function OrdersList({ title, showCustomer = false, children }) {
-  const { loading, data: orders, error, retry } = useLoad(getOrders)
+const [page, setPage] = useState(1)
+const pageSize =20
+
+const loadOrders = useCallback(
+  signal => getOrders(signal, page, pageSize),
+  [page]
+)
+
+const { loading, data, error, retry } = useLoad(loadOrders)
+const orders = data?.items
   const navigate = useNavigate()
 
   return (
@@ -28,7 +38,8 @@ export default function OrdersList({ title, showCustomer = false, children }) {
             <button type="button" className="btn" onClick={retry}>Try again</button>
           </EmptyState>
         )}
-        {orders?.length === 0 && children}
+        {orders?.length === 0 && page === 1 && children}
+        {orders?.length === 0 && page > 1 && <EmptyState title="No orders on this page" text="Use Previous to return to earlier orders." />}
         {orders?.length > 0 && (
           <div className="orders-scroll" role="region" aria-labelledby="orders-heading" tabIndex={0}>
             <table className={`orders-table${showCustomer ? ' orders-table--customer' : ''}`} aria-labelledby="orders-heading">
@@ -64,6 +75,25 @@ export default function OrdersList({ title, showCustomer = false, children }) {
           </div>
         )}
       </div>
+      <div className="orders-pagination">
+  <button
+    type="button"
+    disabled={loading || page === 1}
+    onClick={() => setPage(p => p - 1)}
+  >
+    Previous
+  </button>
+
+  <span>Page {page}</span>
+
+  <button
+    type="button"
+    disabled={loading || !data?.hasNextPage}
+    onClick={() => setPage(p => p + 1)}
+  >
+    Next
+  </button>
+</div>
     </main>
   )
 }

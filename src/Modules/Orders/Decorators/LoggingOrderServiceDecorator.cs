@@ -41,11 +41,22 @@ public class LoggingOrderServiceDecorator : IOrderService
         return await _innerService.GetOrderAsync(orderId);
     }
 
-    public async Task<List<OrderResponse>> GetOrdersAsync(Guid? userId)
-    {
-        _logger.LogInformation("Fetching orders for {UserId}", userId?.ToString() ?? "all users");
-        return await _innerService.GetOrdersAsync(userId);
-    }
+   public async Task<PaginatedOrdersResponse> GetOrdersAsync(
+    Guid? userId,
+    int page = 1,
+    int pageSize = 20)
+{
+    _logger.LogInformation(
+        "Fetching orders for {UserId}, Page: {Page}, PageSize: {PageSize}",
+        userId?.ToString() ?? "all users",
+        page,
+        pageSize);
+
+    return await _innerService.GetOrdersAsync(
+        userId,
+        page,
+        pageSize);
+}
 
     public async Task<(bool Success, OrderResponse? Data, string? Error)> UpdateOrderStatusAsync(Guid orderId, UpdateOrderStatusRequest request)
     {
