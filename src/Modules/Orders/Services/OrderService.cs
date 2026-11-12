@@ -47,28 +47,28 @@ public class OrderService : IOrderService
 
         var order = new Order(userId, items);
 
-        // 2. RESERVATION PHASE: Network Call to Node.js Microservice
-        var deadline = DateTime.UtcNow.AddMilliseconds(2000); 
-        var reservedItems = new List<(Guid ProductId, int Quantity)>();
-        
+        // 2. RESERVATION PHASE: ONE gRPC call reserves every line in a single inventory transaction
+        //    (all lines or none), instead of one call per line (avoids N+1).
+        var reserveRequest = new ReserveItemsRequest { OrderId = order.Id.ToString() };
+        reserveRequest.Items.AddRange(order.Items.Select(i => new ReservationItem
+        {
+            ProductId = i.ProductId.ToString(),
+            Amount = i.Quantity
+        }));
+
         try
         {
-            foreach (var item in order.Items)
-            {
-                await _inventoryClient.ReserveQuantityAsync(new ReserveQuantityRequest 
-                { 
-                    ProductId = item.ProductId.ToString(),
-                    Amount = item.Quantity,
-                    OrderId = order.Id.ToString() 
-                }, deadline: deadline);
+            var reservation = await _inventoryClient.ReserveItemsAsync(
+                reserveRequest, deadline: DateTime.UtcNow.AddMilliseconds(2000));
 
-                reservedItems.Add((item.ProductId, item.Quantity));
-            }
+            if (!reservation.Success)
+                return (false, null, DescribeReservationFailure(reservation, productsById));
         }
         catch (RpcException ex)
         {
-            // Rollback if gRPC fails
-            await RollbackReservationsAsync(reservedItems, order.Id.ToString());
+            // The call failed or timed out. A timeout can still have committed on the inventory side,
+            // so release defensively; ReleaseOrder is idempotent and does nothing if nothing was reserved.
+            await ReleaseReservationAsync(order.Id);
             return (false, null, $"Inventory reservation failed: {ex.Status.Detail}");
         }
 
@@ -80,39 +80,45 @@ public class OrderService : IOrderService
         }
         catch (Exception)
         {
-            // Rollback if local DB fails
-            await RollbackReservationsAsync(reservedItems, order.Id.ToString());
+            // Compensate: give the reserved stock back
+            await ReleaseReservationAsync(order.Id);
             return (false, null, "Failed to save order. Inventory reservation has been rolled back.");
         }
 
-        // FIXED: Added the missing return statement for the success path
         return (true, MapToResponse(order), null);
     }
 
-    // --- SAGA ROLLBACK HELPER ---
-    private async Task RollbackReservationsAsync(List<(Guid ProductId, int Quantity)> itemsToRollback, string orderId)
+    // Builds the error message for a rejected reservation. The "Insufficient stock for '<name>'. ...
+    // Available: N" format is what the frontend parses to show which product ran out.
+    private static string DescribeReservationFailure(ReserveItemsResponse reservation, IReadOnlyDictionary<Guid, ProductSummary> productsById)
     {
-        if (!itemsToRollback.Any()) return;
+        string NameOf(string productId) =>
+            Guid.TryParse(productId, out var id) && productsById.TryGetValue(id, out var p) ? p.Name : productId;
 
-        var rollbackOptions = new CallOptions().WithDeadline(DateTime.UtcNow.AddMilliseconds(2000));
-        
-        foreach (var item in itemsToRollback)
+        var shortage = reservation.Shortages.FirstOrDefault();
+        if (shortage != null)
+            return $"Insufficient stock for '{NameOf(shortage.ProductId)}'. Requested: {shortage.Requested}, Available: {shortage.Available}.";
+
+        var missing = reservation.MissingProductIds.FirstOrDefault();
+        if (missing != null)
+            return $"Product '{NameOf(missing)}' is not available in inventory.";
+
+        return $"Inventory reservation failed: {reservation.Message}";
+    }
+
+    // --- SAGA ROLLBACK HELPER: one call releases everything reserved for the order ---
+    private async Task ReleaseReservationAsync(Guid orderId)
+    {
+        try
         {
-            try 
-            {
-                // FIXED: Changed to ReleaseQuantityRequest to match the proto contract
-                await _inventoryClient.ReleaseQuantityAsync(new ReleaseQuantityRequest 
-                { 
-                    ProductId = item.ProductId.ToString(), 
-                    Amount = item.Quantity, // FIXED: Changed ReleaseQuantity to Amount
-                    OrderId = orderId       // FIXED: Added missing OrderId for idempotency mapping
-                }, rollbackOptions); 
-            }
-            catch (RpcException)
-            {
-                // Extreme Edge Case: C# failed to save, AND Node.js crashed during the rollback.
-                // In production, this requires an ILogger.LogCritical call to trigger a manual reconciliation alert.
-            }
+            await _inventoryClient.ReleaseOrderAsync(
+                new ReleaseOrderRequest { OrderId = orderId.ToString() },
+                deadline: DateTime.UtcNow.AddMilliseconds(2000));
+        }
+        catch (RpcException)
+        {
+            // Extreme edge case: the order could not be saved AND the inventory service is unreachable.
+            // In production this needs a LogCritical + reconciliation job; reservations stay keyed by order id.
         }
     }
 

@@ -14,6 +14,8 @@ using Modules.Orders.Persistence;
 using Modules.Notifications; // Added Notifications using statement
 using Shared;
 using Modules.Users.Interfaces;
+using Shared.Caching;
+using Shared.Http;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -82,8 +84,15 @@ builder.Services.AddRateLimiter(options =>
             }));
 });
 
+// Per-request record of cache hits/misses, read by CacheStatusHeaderMiddleware
+builder.Services.AddScoped<CacheStatus>();
+
+// One shared "is Redis down?" switch for the whole app
+var cacheCooldown = TimeSpan.FromSeconds(builder.Configuration.GetValue("Caching:FailureCooldownSeconds", 30));
+builder.Services.AddSingleton(new CacheCircuitBreaker(cacheCooldown));
+
 // 6b. Redis distributed cache (Requirement 3). abortConnect=false => app still starts if Redis is down;
-// ProductCache then falls back to the database.
+// the caching decorator then falls back to the database.
 builder.Services.AddStackExchangeRedisCache(options =>
 {
     options.Configuration = builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379,abortConnect=false";
@@ -92,13 +101,14 @@ builder.Services.AddStackExchangeRedisCache(options =>
 
 // 7. Register Modules & MediatR
 builder.Services.AddUsersModule(); 
-builder.Services.AddProductsModule(connectionString); 
+builder.Services.AddProductsModule(builder.Configuration, connectionString);
 builder.Services.AddOrdersModule();
 builder.Services.AddNotificationsModule(); // <-- Added Notifications module registration
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(AppDomain.CurrentDomain.GetAssemblies()));
 var app = builder.Build();
 
 
+app.UseMiddleware<CacheStatusHeaderMiddleware>(); // X-Cache: HIT | MISS | BYPASS
 
 // 8. Middleware Pipeline (Order is strictly critical)
 // Apply Security Headers (Requirement 1)

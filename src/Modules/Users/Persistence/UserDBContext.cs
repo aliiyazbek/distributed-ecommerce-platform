@@ -21,6 +21,13 @@ public class UsersDbContext : DbContext, IUnitOfWork
 
         // ... Keep your existing Roles configuration ...
 
+        // Login looks users up by Email, and registration must never create two accounts with
+        // the same Email (even when two requests race): a unique index does both.
+        modelBuilder.Entity<User>()
+            .HasIndex(u => u.Email)
+            .IsUnique()
+            .HasDatabaseName("IX_Users_Email");
+
         // 1. Configure CustomerProfile 1-to-1 relationship
         modelBuilder.Entity<CustomerProfile>()
             .HasKey(cp => cp.UserId); // Explicitly define UserId as the PK
