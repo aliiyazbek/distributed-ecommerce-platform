@@ -5,7 +5,14 @@ namespace Modules.Products.Persistence;
 
 public class ProductsDbContext : DbContext
 {
+    // Consistency scope for catalog writes: every product write is recorded under it, and every
+    // product read requires it, so nobody reads (or caches) a catalog older than the latest write.
+    public const string CatalogScope = "products";
+
     public ProductsDbContext(DbContextOptions<ProductsDbContext> options) : base(options) { }
+
+    // Used by ProductsReadDbContext: same model, different connection (the read replica).
+    protected ProductsDbContext(DbContextOptions options) : base(options) { }
 
     public DbSet<Product> Products { get; set; }
 

@@ -11,6 +11,9 @@ public interface IProductRepository
     Task<Product?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
     Task<ProductPage> GetPageAsync(string? category, int page, int pageSize, CancellationToken cancellationToken = default);
 
+    // Read-before-write (e.g. an update): always the primary database, never cached or replicated.
+    Task<Product?> GetByIdForUpdateAsync(Guid id, CancellationToken cancellationToken = default);
+
     // Writes: each one saves immediately, so a decorator can invalidate right after a confirmed commit.
     Task AddAsync(Product product, CancellationToken cancellationToken = default);
     Task UpdateAsync(Product product, CancellationToken cancellationToken = default);

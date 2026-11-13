@@ -13,7 +13,7 @@ Workflow: `main` is protected. Work goes on a feature branch (e.g. `feature/auth
 Three processes plus infrastructure:
 
 ```bash
-docker compose up -d                         # postgres:5432, redis:6379, mailpit (8025 UI / 1025 SMTP), pgadmin:5050
+docker compose up -d                         # postgres:5432 (primary), postgres-replica:5433 (read replica), redis:6379, mailpit (8025 UI / 1025 SMTP), pgadmin:5050
 node inventory-service/server.js             # gRPC inventory service on :50051 (needs DB_* env vars, see below)
 dotnet run --project src/Host                # ASP.NET API on http://localhost:5169 (Swagger at /swagger in Development)
 cd frontend/ecommerce-store && npm run dev   # Vite React store; proxies /api and /images to :5169
@@ -24,7 +24,8 @@ cd frontend/ecommerce-store && npm run dev   # Vite React store; proxies /api an
   `dotnet ef database update --project src/Modules/Products --startup-project src/Host --context ProductsDbContext`
   (contexts: `UsersDbContext`, `ProductsDbContext`, `OrdersDbContext`). Add migrations the same way with `dotnet ef migrations add <Name> ...`; each module owns its `Migrations/` folder.
 - New users always register as Customer (RoleId 2). To get an Admin, update the DB: `UPDATE users."Users" SET "RoleId"=1 WHERE "Email"='...';`
-- Disable the Redis cache for before/after benchmarks with the env var `Caching__Enabled=false`.
+- Disable the Redis cache for before/after benchmarks with the env var `Caching__Enabled=false`, and the read replica with `ReadReplica__Enabled=false` (all reads then go to the primary).
+- The replica clones the primary on its first start (`docker/postgres/replica-entrypoint.sh`). To rebuild it from scratch: `docker compose rm -sf postgres-replica` then `docker volume rm distributed-ecommerce-platform_pgdata-replica` and `docker compose up -d`. Files under `docker/` must keep LF line endings (`.gitattributes`).
 
 ## Build, lint, test
 
@@ -42,7 +43,7 @@ There is no .NET test project. Load testing is being moved to JMeter (no test pl
 
 ### Backend: modular monolith (.NET 10)
 
-`src/Host` is the only executable. It wires everything in `Program.cs`: one Postgres connection string shared by three DbContexts (each with its own schema via `HasDefaultSchema` and its own `MigrationsAssembly`), JWT bearer auth (HS256, `Jwt:Key`), API versioning, global `ProblemDetails` error handling (`Shared/GlobalExceptionHandler`), per-IP fixed-window rate limiting (`auth-limit` policy on login/register), security headers, static files (uploaded product images under `wwwroot/images`), Redis distributed cache, and MediatR scanning all loaded assemblies.
+`src/Host` is the only executable. It wires everything in `Program.cs`: one primary Postgres connection string shared by three DbContexts (each with its own schema via `HasDefaultSchema` and its own `MigrationsAssembly`; Users is registered in `Program.cs`, Products and Orders register theirs in their module, together with a read-replica context), JWT bearer auth (HS256, `Jwt:Key`), API versioning, global `ProblemDetails` error handling (`Shared/GlobalExceptionHandler`), per-IP fixed-window rate limiting (`auth-limit` policy on login/register), security headers, static files (uploaded product images under `wwwroot/images`), Redis distributed cache, and MediatR scanning all loaded assemblies.
 
 Each module in `src/Modules/{Users,Products,Orders,Notifications}` is a class library with the same layout: `Controllers`, `Contracts` (DTOs), `Entities`, `Interfaces`, `Services`, `Validators` (FluentValidation, auto-validation), `Persistence`, and an `XxxModuleExtensions.AddXxxModule()` registration method called from `Program.cs`.
 
@@ -65,6 +66,12 @@ IProductRepository → CachingProductRepositoryDecorator → ProductRepository (
 ```
 
 `ProductsModuleExtensions` only registers the caching decorator when `Caching:Enabled` is true (bound to `ProductCacheOptions`), so the "caching off" baseline never touches Redis. The decorator is cache-aside over `IDistributedCache`: `product:{id}` (TTL 300s) and list pages under `products:list:{version}:{category}:{page}:{pageSize}` (TTL 60s). Every repository write commits first, then deletes the product key and bumps the list version (no key scanning). Available quantity is never cached; the repository only returns `Product` rows. On a Redis error the decorator falls back to the database and the singleton `Shared/Caching/CacheCircuitBreaker` skips Redis for `Caching:FailureCooldownSeconds` (30s); invalidation is still always attempted. The decorator records HIT/MISS/BYPASS in the scoped `Shared/Caching/CacheStatus`, and `Shared/Http/CacheStatusHeaderMiddleware` writes it as `X-Cache` (no header when nothing was looked up). `GetProductsByIdsQueryHandler` (used by Orders) reads the DB directly on purpose so order prices are never cached. GET product endpoints also use `[ETag]` (`Shared/Http/ETagFilter`): SHA-256 of the full body, `304` on matching `If-None-Match`, `Cache-Control: private, no-cache`. The product list rejects `page < 1`, `pageSize` outside 1–100 and `category` longer than 100 chars with 400.
+
+### Read replica (Requirement 3)
+
+`postgres-replica` (port 5433) is a hot standby kept in sync by PostgreSQL streaming replication (async) from `postgres`; the primary loads `docker/postgres/pg_hba.conf` to allow the `replicator` role. Products and Orders each have a read-only context (`ProductsReadDbContext`, `OrdersReadDbContext`: subclasses of the primary context pointed at `ConnectionStrings:ReadReplicaConnection`, no tracking, `SaveChanges` throws). Never use them for migrations.
+
+Reads go through `Shared/Data/ReadRouter.ReadAsync(primary, replica, query, scopes)`. It uses the replica only when it is safe: replicas enabled, `ReplicaHealth` not in cooldown, and the replica has replayed (`pg_last_wal_replay_lsn()`) every write the reader must see. After each committed write, `WritePositionInterceptor` (attached to the primary contexts) stores `pg_current_wal_lsn()` in Redis (`ecommerce:rw:<scope>`, atomic max via Lua, TTL `ReadReplica:ConsistencyWindowSeconds`) under the writer's scope (`user:<id>`) plus module scopes (`products` for every catalog write, so nobody reads or caches a catalog older than the latest write). Anything uncertain (Redis down, position not recorded, replica error) sends reads to the primary. Writes and read-before-write (`IProductRepository.GetByIdForUpdateAsync`, `UpdateOrderStatusAsync`), Users (login, duplicate-email check), `GetProductsByIdsQueryHandler` (order prices) and inventory stock always use the primary. Responses carry `X-Db-Read: REPLICA|PRIMARY`. New read paths should go through `ReadRouter`; new write contexts need the interceptor.
 
 ### Frontend (`frontend/ecommerce-store`)
 

@@ -75,6 +75,10 @@ public sealed class CachingProductRepositoryDecorator : IProductRepository
         return result;
     }
 
+    // Read-before-write: deliberately NOT cached, it must see the primary's current row.
+    public Task<Product?> GetByIdForUpdateAsync(Guid id, CancellationToken cancellationToken = default) =>
+        _inner.GetByIdForUpdateAsync(id, cancellationToken);
+
     // ---------- Writes: commit first, then invalidate ----------
 
     public async Task AddAsync(Product product, CancellationToken cancellationToken = default)

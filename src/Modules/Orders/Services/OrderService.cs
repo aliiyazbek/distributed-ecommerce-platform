@@ -5,6 +5,7 @@ using Modules.Orders.Contracts;
 using Modules.Orders.Entities;
 using Modules.Orders.Interfaces;
 using Modules.Orders.Persistence;
+using Shared.Data;
 using Shared.Events;
 using Shared.Queries;
 
@@ -13,14 +14,24 @@ namespace Modules.Orders.Services;
 
 public class OrderService : IOrderService
 {
-    private readonly OrdersDbContext _dbContext;
+    private readonly OrdersDbContext _dbContext;         // primary: writes + read-before-write
+    private readonly OrdersReadDbContext _readDbContext; // read replica
+    private readonly ReadRouter _readRouter;
     private readonly ISender _sender;
     private readonly IPublisher _publisher;
     private readonly InventoryService.InventoryServiceClient _inventoryClient;
 
-    public OrderService(OrdersDbContext dbContext, ISender sender, IPublisher publisher, InventoryService.InventoryServiceClient inventoryClient)
+    public OrderService(
+        OrdersDbContext dbContext,
+        OrdersReadDbContext readDbContext,
+        ReadRouter readRouter,
+        ISender sender,
+        IPublisher publisher,
+        InventoryService.InventoryServiceClient inventoryClient)
     {
         _dbContext = dbContext;
+        _readDbContext = readDbContext;
+        _readRouter = readRouter;
         _sender = sender;
         _publisher = publisher;
         _inventoryClient = inventoryClient;
@@ -122,45 +133,53 @@ public class OrderService : IOrderService
         }
     }
 
+    // Reads go to the read replica when it already contains the caller's own writes
+    // (the router adds the current user's scope), otherwise to the primary.
     public async Task<(bool Success, OrderResponse? Data, string? Error)> GetOrderAsync(Guid orderId)
     {
-        var order = await _dbContext.Orders
-            .AsNoTracking()
-            .Include(o => o.Items)
-            .FirstOrDefaultAsync(o => o.Id == orderId);
+        var order = await _readRouter.ReadAsync<OrdersDbContext, Order?>(_dbContext, _readDbContext,
+            (db, ct) => db.Orders
+                .AsNoTracking()
+                .Include(o => o.Items)
+                .FirstOrDefaultAsync(o => o.Id == orderId, ct));
 
         if (order == null)
             return (false, null, "Order not found.");
 
         return (true, MapToResponse(order), null);
     }
-public async Task<PaginatedOrdersResponse> GetOrdersAsync(
-    Guid? userId,
-    int page = 1,
-    int pageSize = 20)
-{
-    if (page < 1 || pageSize < 1 || pageSize > 100)
-        throw new ArgumentOutOfRangeException(
-            nameof(page), "Invalid pagination parameters.");
 
-    IQueryable<Order> query = _dbContext.Orders
-        .AsNoTracking()
-        .Include(o => o.Items);
+    public async Task<PaginatedOrdersResponse> GetOrdersAsync(
+        Guid? userId,
+        int page = 1,
+        int pageSize = 20)
+    {
+        if (page < 1 || pageSize < 1 || pageSize > 100)
+            throw new ArgumentOutOfRangeException(
+                nameof(page), "Invalid pagination parameters.");
 
-    if (userId.HasValue)
-        query = query.Where(o => o.UserId == userId.Value);
+        var orders = await _readRouter.ReadAsync<OrdersDbContext, List<Order>>(_dbContext, _readDbContext,
+            (db, ct) =>
+            {
+                IQueryable<Order> query = db.Orders
+                    .AsNoTracking()
+                    .Include(o => o.Items);
 
-    var orders = await query
-        .OrderByDescending(o => o.CreatedAt)
-        .ThenByDescending(o => o.Id)
-        .Skip((page - 1) * pageSize)
-        .Take(pageSize + 1)
-        .ToListAsync();
+                if (userId.HasValue)
+                    query = query.Where(o => o.UserId == userId.Value);
 
-    return new PaginatedOrdersResponse(
-        orders.Take(pageSize).Select(MapToResponse).ToList(),
-        orders.Count > pageSize);
-}
+                return query
+                    .OrderByDescending(o => o.CreatedAt)
+                    .ThenByDescending(o => o.Id)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize + 1)
+                    .ToListAsync(ct);
+            });
+
+        return new PaginatedOrdersResponse(
+            orders.Take(pageSize).Select(MapToResponse).ToList(),
+            orders.Count > pageSize);
+    }
     public async Task<(bool Success, OrderResponse? Data, string? Error)> UpdateOrderStatusAsync(Guid orderId, UpdateOrderStatusRequest request)
     {
         var order = await _dbContext.Orders

@@ -76,7 +76,7 @@ public class ProductService : IProductService
 
     public async Task<ProductResponse?> UpdateProductAsync(Guid id, UpdateProductRequest request)
     {
-        var product = await _repository.GetByIdAsync(id);
+        var product = await _repository.GetByIdForUpdateAsync(id);
         if (product == null) return null;
 
         product.Name = request.Name;
