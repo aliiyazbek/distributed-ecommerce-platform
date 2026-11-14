@@ -49,7 +49,11 @@ namespace Modules.Orders.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("UserId");
+                    b.HasIndex("CreatedAt", "Id")
+                        .HasDatabaseName("IX_Orders_CreatedAt_Id");
+
+                    b.HasIndex("UserId", "CreatedAt", "Id")
+                        .HasDatabaseName("IX_Orders_UserId_CreatedAt_Id");
 
                     b.ToTable("Orders", "orders");
                 });

@@ -104,6 +104,10 @@ namespace Modules.Users.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("Email")
+                        .IsUnique()
+                        .HasDatabaseName("IX_Users_Email");
+
                     b.HasIndex("RoleId");
 
                     b.ToTable("Users", "users");

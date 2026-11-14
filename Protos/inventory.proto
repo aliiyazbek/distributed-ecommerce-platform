@@ -6,9 +6,15 @@ option csharp_namespace = "Modules.Orders.Integration.Protos";
 package inventory;
 
 service InventoryService {
+  // Single product (product details page)
   rpc CheckQuantity (CheckQuantityRequest) returns (QuantityResponse);
-  rpc ReserveQuantity (ReserveQuantityRequest) returns (ReservationResponse);
-  rpc ReleaseQuantity (ReleaseQuantityRequest) returns (ReservationResponse);
+
+  // Batched calls: one round trip per page / per order instead of one per product (avoids N+1)
+  rpc CheckQuantities (CheckQuantitiesRequest) returns (QuantitiesResponse);
+  // Reserves every line of an order in ONE transaction: all lines are reserved or none are.
+  rpc ReserveItems (ReserveItemsRequest) returns (ReserveItemsResponse);
+  // Releases everything reserved for an order. Idempotent: safe to call more than once.
+  rpc ReleaseOrder (ReleaseOrderRequest) returns (ReservationResponse);
 
   rpc InitializeStock (InitializeRequest) returns (ReservationResponse);
 }
@@ -26,16 +32,47 @@ message QuantityResponse {
   int32 AvailableQuantity = 1;
 }
 
-message ReserveQuantityRequest {
-  string ProductId = 1;
-  int32 Amount = 2;
-  string OrderId = 3;
+message CheckQuantitiesRequest {
+  repeated string ProductIds = 1;
 }
 
-message ReleaseQuantityRequest {
+message ProductQuantity {
+  string ProductId = 1;
+  int32 AvailableQuantity = 2;
+}
+
+// Products that have no stock row are returned with AvailableQuantity = 0.
+message QuantitiesResponse {
+  repeated ProductQuantity Items = 1;
+}
+
+message ReservationItem {
   string ProductId = 1;
   int32 Amount = 2;
-  string OrderId = 3;
+}
+
+message ReserveItemsRequest {
+  string OrderId = 1;
+  repeated ReservationItem Items = 2;
+}
+
+message StockShortage {
+  string ProductId = 1;
+  int32 Requested = 2;
+  int32 Available = 3;
+}
+
+// Business failures (not enough stock, unknown product) come back as Success = false with details,
+// not as gRPC errors; gRPC errors mean the call itself failed (timeout, service down, database error).
+message ReserveItemsResponse {
+  bool Success = 1;
+  string Message = 2;
+  repeated StockShortage Shortages = 3;
+  repeated string MissingProductIds = 4;
+}
+
+message ReleaseOrderRequest {
+  string OrderId = 1;
 }
 
 message ReservationResponse {

@@ -7,6 +7,9 @@ public class OrdersDbContext : DbContext
 {
     public OrdersDbContext(DbContextOptions<OrdersDbContext> options) : base(options) { }
 
+    // Used by OrdersReadDbContext: same model, different connection (the read replica).
+    protected OrdersDbContext(DbContextOptions options) : base(options) { }
+
     public DbSet<Order> Orders { get; set; }
     public DbSet<OrderItem> OrderItems { get; set; }
 
@@ -17,7 +20,14 @@ public class OrdersDbContext : DbContext
         modelBuilder.Entity<Order>(builder =>
         {
             builder.HasKey(o => o.Id);
-            builder.HasIndex(o => o.UserId);
+            // Customer's orders: WHERE UserId = @id ORDER BY CreatedAt DESC, Id DESC LIMIT n.
+            // Also serves plain UserId lookups, so it replaces the old single-column IX_Orders_UserId.
+            builder.HasIndex(o => new { o.UserId, o.CreatedAt, o.Id })
+                .HasDatabaseName("IX_Orders_UserId_CreatedAt_Id");
+
+            // Admin "all orders": ORDER BY CreatedAt DESC, Id DESC LIMIT n (read backwards).
+            builder.HasIndex(o => new { o.CreatedAt, o.Id })
+                .HasDatabaseName("IX_Orders_CreatedAt_Id");
             builder.Property(o => o.Status).HasConversion<string>().HasMaxLength(20);
             builder.Property(o => o.TotalPrice).HasPrecision(18, 2);
             builder.HasMany(o => o.Items)
