@@ -7,13 +7,15 @@ using Microsoft.AspNetCore.RateLimiting;
 using Asp.Versioning;
 using Modules.Users;
 using Modules.Users.Persistence;
-using Modules.Products.Persistence;
 using Modules.Products;
 using Modules.Orders;
-using Modules.Orders.Persistence;
 using Modules.Notifications; // Added Notifications using statement
 using Shared;
 using Modules.Users.Interfaces;
+using Shared.Caching;
+using Shared.Data;
+using Shared.Http;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -21,14 +23,10 @@ var builder = WebApplication.CreateBuilder(args);
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") 
                        ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
 
+// Users always use the primary (login and the duplicate-email check must see the latest data).
+// Products and Orders register their own primary + read-replica contexts in their modules.
 builder.Services.AddDbContext<UsersDbContext>(options =>
     options.UseNpgsql(connectionString, b => b.MigrationsAssembly("Modules.Users")));
-
-builder.Services.AddDbContext<ProductsDbContext>(options =>
-    options.UseNpgsql(connectionString, b => b.MigrationsAssembly("Modules.Products")));
-
-builder.Services.AddDbContext<OrdersDbContext>(options =>
-    options.UseNpgsql(connectionString, b => b.MigrationsAssembly("Modules.Orders")));
 
 // 2. Swagger & Controllers
 builder.Services.AddControllers();
@@ -82,23 +80,40 @@ builder.Services.AddRateLimiter(options =>
             }));
 });
 
-// 6b. Redis distributed cache (Requirement 3). abortConnect=false => app still starts if Redis is down;
-// ProductCache then falls back to the database.
+// Per-request record of cache hits/misses, read by CacheStatusHeaderMiddleware
+builder.Services.AddScoped<CacheStatus>();
+
+// One shared "is Redis down?" switch for the whole app
+var cacheCooldown = TimeSpan.FromSeconds(builder.Configuration.GetValue("Caching:FailureCooldownSeconds", 30));
+builder.Services.AddSingleton(new CacheCircuitBreaker(cacheCooldown));
+
+// 6b. Redis (Requirement 3). One shared connection for the distributed cache and the read-replica
+// write positions. abortConnect=false => the app still starts if Redis is down; the cache then
+// falls back to the database and reads fall back to the primary.
+var redisConnectionString = builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379,abortConnect=false";
+var redis = ConnectionMultiplexer.Connect(redisConnectionString);
+builder.Services.AddSingleton<IConnectionMultiplexer>(redis);
 builder.Services.AddStackExchangeRedisCache(options =>
 {
-    options.Configuration = builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379,abortConnect=false";
+    options.ConnectionMultiplexerFactory = () => Task.FromResult<IConnectionMultiplexer>(redis);
     options.InstanceName = "ecommerce:";
 });
 
+// 6c. Read replica routing (Requirement 3): reads go to the replica only when it already has the
+// caller's latest writes; otherwise, or if it is down, to the primary.
+builder.Services.AddReadReplicaRouting(builder.Configuration);
+
 // 7. Register Modules & MediatR
-builder.Services.AddUsersModule(); 
-builder.Services.AddProductsModule(connectionString); 
-builder.Services.AddOrdersModule();
+builder.Services.AddUsersModule();
+builder.Services.AddProductsModule(builder.Configuration, connectionString);
+builder.Services.AddOrdersModule(builder.Configuration, connectionString);
 builder.Services.AddNotificationsModule(); // <-- Added Notifications module registration
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(AppDomain.CurrentDomain.GetAssemblies()));
 var app = builder.Build();
 
 
+app.UseMiddleware<CacheStatusHeaderMiddleware>(); // X-Cache: HIT | MISS | BYPASS
+app.UseMiddleware<ReadSourceHeaderMiddleware>();  // X-Db-Read: REPLICA | PRIMARY
 
 // 8. Middleware Pipeline (Order is strictly critical)
 // Apply Security Headers (Requirement 1)

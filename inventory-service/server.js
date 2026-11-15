@@ -55,77 +55,148 @@ async function checkQuantity(call, callback) {
     }
 }
 
-async function reserveQuantity(call, callback) {
-    const { ProductId, Amount, OrderId } = call.request;
-    const client = await pool.connect();
+// Batched stock lookup: one query for a whole page of products (avoids N+1).
+// Products without a stock row are returned with 0.
+async function checkQuantities(call, callback) {
+    const ids = [...new Set(call.request.ProductIds || [])];
+    if (ids.length === 0) return callback(null, { Items: [] });
 
     try {
-        await client.query('BEGIN');
-
-        // Idempotency Check: If order already reserved this product, return success immediately[cite: 3]
-        const checkRes = await client.query(
-            'SELECT 1 FROM inventory.reservations WHERE order_id = $1 AND product_id = $2', 
-            [OrderId, ProductId]
+        const res = await pool.query(
+            'SELECT product_id, available_quantity FROM inventory.stock WHERE product_id = ANY($1::uuid[])',
+            [ids]
         );
-        if (checkRes.rows.length > 0) {
-            await client.query('COMMIT');
-            return callback(null, { Success: true, Message: "Already reserved" });
-        }
-
-        // Row Lock: Prevent race conditions[cite: 3]
-        const stockRes = await client.query(
-            'SELECT available_quantity FROM inventory.stock WHERE product_id = $1 FOR UPDATE', 
-            [ProductId]
-        );
-
-        if (stockRes.rows.length === 0) {
-            throw { code: grpc.status.NOT_FOUND, message: "Product not found in inventory" }; // Standardized Errors[cite: 3]
-        }
-
-        const currentQty = stockRes.rows[0].available_quantity;
-        if (currentQty < Amount) {
-            throw { code: grpc.status.FAILED_PRECONDITION, message: "Insufficient stock" }; // Standardized Errors[cite: 3]
-        }
-
-        // Update stock and log reservation
-        await client.query('UPDATE inventory.stock SET available_quantity = available_quantity - $1 WHERE product_id = $2', [Amount, ProductId]);
-        await client.query('INSERT INTO inventory.reservations (order_id, product_id, amount) VALUES ($1, $2, $3)', [OrderId, ProductId, Amount]);
-
-        await client.query('COMMIT');
-        callback(null, { Success: true, Message: "Reserved successfully" });
-    } catch (err) {
-        await client.query('ROLLBACK');
-        callback({ 
-            code: err.code || grpc.status.INTERNAL, 
-            details: err.message || "Database error" 
+        const found = new Map(res.rows.map(r => [r.product_id, r.available_quantity]));
+        callback(null, {
+            Items: ids.map(id => ({ ProductId: id, AvailableQuantity: found.get(id.toLowerCase()) ?? 0 }))
         });
-    } finally {
-        client.release(); // Prevent connection leaks[cite: 3]
+    } catch (err) {
+        callback({ code: grpc.status.INTERNAL, details: err.message });
     }
 }
 
-async function releaseQuantity(call, callback) {
-    const { ProductId, Amount, OrderId } = call.request;
+// Reserves ALL lines of an order in one transaction: either every line is reserved or none is.
+// A constant number of SQL statements, whatever the number of lines.
+async function reserveItems(call, callback) {
+    const { OrderId } = call.request;
+
+    // Merge duplicate lines for the same product (the reservations PK is (order_id, product_id)).
+    const totals = new Map();
+    for (const { ProductId, Amount } of call.request.Items || []) {
+        if (!(Amount > 0)) {
+            return callback({ code: grpc.status.INVALID_ARGUMENT, details: `Invalid amount for product ${ProductId}` });
+        }
+        const id = ProductId.toLowerCase();
+        totals.set(id, (totals.get(id) || 0) + Amount);
+    }
+    if (totals.size === 0) {
+        return callback({ code: grpc.status.INVALID_ARGUMENT, details: 'Order has no items' });
+    }
+    const productIds = [...totals.keys()];
+    const amounts = productIds.map(id => totals.get(id));
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // Idempotency: reservations for an order are all-or-nothing, so any existing row means
+        // this order was already reserved (e.g. a retry after a timeout).
+        const existing = await client.query('SELECT 1 FROM inventory.reservations WHERE order_id = $1 LIMIT 1', [OrderId]);
+        if (existing.rows.length > 0) {
+            await client.query('COMMIT');
+            return callback(null, { Success: true, Message: 'Already reserved', Shortages: [], MissingProductIds: [] });
+        }
+
+        // Lock every stock row of the order in a fixed order (by product_id), so two concurrent
+        // orders sharing products always lock in the same sequence and cannot deadlock.
+        const stockRes = await client.query(
+            `SELECT product_id, available_quantity FROM inventory.stock
+             WHERE product_id = ANY($1::uuid[])
+             ORDER BY product_id
+             FOR UPDATE`,
+            [productIds]
+        );
+        const available = new Map(stockRes.rows.map(r => [r.product_id, r.available_quantity]));
+
+        const missing = productIds.filter(id => !available.has(id));
+        const shortages = productIds
+            .filter(id => available.has(id) && available.get(id) < totals.get(id))
+            .map(id => ({ ProductId: id, Requested: totals.get(id), Available: available.get(id) }));
+
+        if (missing.length > 0 || shortages.length > 0) {
+            await client.query('ROLLBACK');
+            return callback(null, {
+                Success: false,
+                Message: missing.length > 0 ? 'Product not found in inventory' : 'Insufficient stock',
+                Shortages: shortages,
+                MissingProductIds: missing
+            });
+        }
+
+        // One UPDATE and one INSERT for all lines, using unnest() over parallel arrays.
+        await client.query(
+            `UPDATE inventory.stock s
+             SET available_quantity = s.available_quantity - r.amount
+             FROM unnest($1::uuid[], $2::int[]) AS r(product_id, amount)
+             WHERE s.product_id = r.product_id`,
+            [productIds, amounts]
+        );
+        await client.query(
+            `INSERT INTO inventory.reservations (order_id, product_id, amount)
+             SELECT $1, r.product_id, r.amount FROM unnest($2::uuid[], $3::int[]) AS r(product_id, amount)`,
+            [OrderId, productIds, amounts]
+        );
+
+        await client.query('COMMIT');
+        callback(null, { Success: true, Message: 'Reserved successfully', Shortages: [], MissingProductIds: [] });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        callback({ code: grpc.status.INTERNAL, details: err.message || 'Database error' });
+    } finally {
+        client.release(); // Prevent connection leaks
+    }
+}
+
+// Releases everything reserved for an order in one transaction.
+// Idempotent: calling it again (or for an order with no reservations) changes nothing.
+async function releaseOrder(call, callback) {
+    const { OrderId } = call.request;
     const client = await pool.connect();
 
     try {
         await client.query('BEGIN');
 
-        // Check if reservation exists to allow rollback
-        const checkRes = await client.query('SELECT 1 FROM inventory.reservations WHERE order_id = $1 AND product_id = $2', [OrderId, ProductId]);
-        
-        if (checkRes.rows.length > 0) {
-            await client.query('UPDATE inventory.stock SET available_quantity = available_quantity + $1 WHERE product_id = $2', [Amount, ProductId]);
-            await client.query('DELETE FROM inventory.reservations WHERE order_id = $1 AND product_id = $2', [OrderId, ProductId]);
+        const reserved = await client.query(
+            'SELECT product_id, amount FROM inventory.reservations WHERE order_id = $1 FOR UPDATE',
+            [OrderId]
+        );
+
+        if (reserved.rows.length > 0) {
+            const productIds = reserved.rows.map(r => r.product_id);
+            const amounts = reserved.rows.map(r => r.amount);
+
+            // Same lock order as reserveItems to avoid deadlocks
+            await client.query(
+                'SELECT 1 FROM inventory.stock WHERE product_id = ANY($1::uuid[]) ORDER BY product_id FOR UPDATE',
+                [productIds]
+            );
+            await client.query(
+                `UPDATE inventory.stock s
+                 SET available_quantity = s.available_quantity + r.amount
+                 FROM unnest($1::uuid[], $2::int[]) AS r(product_id, amount)
+                 WHERE s.product_id = r.product_id`,
+                [productIds, amounts]
+            );
+            await client.query('DELETE FROM inventory.reservations WHERE order_id = $1', [OrderId]);
         }
 
         await client.query('COMMIT');
-        callback(null, { Success: true, Message: "Released successfully" });
+        callback(null, { Success: true, Message: reserved.rows.length > 0 ? 'Released successfully' : 'Nothing to release' });
     } catch (err) {
         await client.query('ROLLBACK');
         callback({ code: grpc.status.INTERNAL, details: err.message });
     } finally {
-        client.release(); // Prevent connection leaks[cite: 3]
+        client.release(); // Prevent connection leaks
     }
 }
 
@@ -133,8 +204,9 @@ async function releaseQuantity(call, callback) {
 const server = new grpc.Server();
 server.addService(inventoryProto.InventoryService.service, {
     checkQuantity,
-    reserveQuantity,
-    releaseQuantity,
+    checkQuantities,
+    reserveItems,
+    releaseOrder,
     InitializeStock: initializeStock
 });
 
@@ -142,11 +214,19 @@ initDb().then(() => {
     const bindAddr = `0.0.0.0:${process.env.GRPC_PORT || 50051}`;
     server.bindAsync(bindAddr, grpc.ServerCredentials.createInsecure(), (err, port) => {
         if (err) {
-            console.error(err);
+            // Most common cause: another copy of this service is already running on the port.
+            console.error(`Could not bind ${bindAddr}: ${err.message}`);
+            console.error('Is another inventory-service already running? Check with: netstat -ano | findstr :50051');
+            pool.end(() => process.exit(1));
             return;
         }
         console.log(`Inventory gRPC Service running on port ${port}`);
     });
+}).catch(err => {
+    // Usually Postgres is not running (docker compose up -d) or the .env DB_* values are wrong.
+    console.error(`Could not connect to PostgreSQL at ${process.env.DB_HOST}:${process.env.DB_PORT}: ${err.code || err.message}`);
+    console.error('Start the database with: docker compose up -d');
+    process.exit(1);
 });
 
 // Intercept SIGTERM to drain requests and close pool safely[cite: 3]

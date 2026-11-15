@@ -1,14 +1,26 @@
-# المتطلب الثالث: الأداء والتخزين المؤقت (Redis + ETag + k6)
+# المتطلب الثالث: الأداء والتخزين المؤقت (Redis + ETag)
 
 ## ما الذي أُضيف
 | الملف | الدور |
 |---|---|
 | `docker-compose.yml` | خدمة `redis` (سياسة `allkeys-lru`، 128MB) |
-| `src/Modules/Products/Caching/ProductCache.cs` | Cache-aside على Redis، مع TTL وإبطال عند التعديل |
-| `src/Modules/Products/Services/ProductService.cs` | القراءة من الكاش أولاً، وإبطاله عند الإنشاء/التعديل |
+| `src/Modules/Products/Interfaces/IProductRepository.cs` + `Persistence/Repositories/ProductRepository.cs` | طبقة الوصول للبيانات (EF Core) — تُرجع بيانات المنتج فقط، بلا كمية |
+| `src/Modules/Products/Decorators/CachingProductRepositoryDecorator.cs` | Cache-aside على Redis كـ **Decorator** حول المستودع، مع TTL وإبطال بعد كل كتابة |
+| `src/Modules/Products/Caching/ProductCacheOptions.cs` | إعدادات الكاش من قسم `Caching` في `appsettings.json` |
+| `src/Shared/Caching/CacheCircuitBreaker.cs` | عند فشل Redis يتجاوزه لمدة `FailureCooldownSeconds` (افتراضياً 30 ثانية) |
+| `src/Shared/Caching/CacheStatus.cs` + `src/Shared/Http/CacheStatusHeaderMiddleware.cs` | يسجّل نتيجة الكاش لكل طلب ويكتب الترويسة `X-Cache` |
+| `src/Modules/Products/Services/ProductService.cs` | منطق العمل فقط — لا يعرف بوجود الكاش |
 | `PUT /api/v1/Products/{id}` | تعديل منتج (Admin) — يُبطل الكاش فوراً |
 | `src/Shared/Http/ETagFilter.cs` | ETag + `304 Not Modified` على `GET` المنتجات |
-| `k6/*.js` | اختبار الحمل واختبار الحداثة |
+
+## البنية (سلسلة الـ Decorators)
+```
+IProductService    → LoggingProductServiceDecorator    → ProductService
+IProductRepository → CachingProductRepositoryDecorator → ProductRepository → PostgreSQL
+                         ↕ Redis
+```
+- عند `Caching:Enabled=false` لا يُسجَّل الـ Decorator أصلاً، فلا يوجد أي اتصال بـ Redis (قياس "قبل" نظيف).
+- الكتابة: يُنفَّذ الحفظ في قاعدة البيانات أولاً ثم يُبطَل الكاش.
 
 ## سياسة التخزين (ما يُخزَّن وما لا يُخزَّن)
 | يُخزَّن | السبب | المدة |
@@ -19,9 +31,11 @@
 | **لا يُخزَّن:** المستخدمون، التوكنات، الطلبات | حساسة / سريعة التغير | — |
 
 - **انتهاء الصلاحية:** TTL مطلق كشبكة أمان.
-- **الحذف عند التعديل:** `InvalidateAsync` يحذف مفتاح المنتج ويُغيّر "رقم إصدار" القوائم فتصبح كل صفحات القوائم القديمة غير قابلة للوصول (دون مسح المفاتيح).
-- **سقوط Redis:** يُسجَّل تحذير ويُقرأ من قاعدة البيانات (الكاش ليس نقطة فشل وحيدة).
-- الترويسة `X-Cache: HIT | MISS | BYPASS | DISABLED` للتشخيص.
+- **الحذف عند التعديل:** بعد كل `AddAsync`/`UpdateAsync`/`RemoveAsync` يحذف الـ Decorator مفتاح المنتج ويُغيّر "رقم إصدار" القوائم فتصبح كل صفحات القوائم القديمة غير قابلة للوصول (دون مسح المفاتيح).
+- **سقوط Redis:** يُسجَّل تحذير ويُقرأ من قاعدة البيانات، ثم يُتجاوز Redis لمدة 30 ثانية حتى لا ينتظر كل طلب مهلة الاتصال (الكاش ليس نقطة فشل وحيدة).
+- الترويسة `X-Cache: HIT | MISS | BYPASS` للتشخيص (لا تظهر عند تعطيل الكاش).
+- **حدود القائمة:** `page ≥ 1`، و`pageSize` بين 1 و100، وطول `category` حتى 100 حرف — وإلا `400`.
+- **قيد معروف:** إذا قرأ طلبٌ بيانات قديمة من DB وكتبها في Redis بعد الإبطال مباشرة، قد تبقى قديمة حتى انتهاء TTL (5 دقائق كحد أقصى).
 
 ## ETag
 الخادم يحسب SHA-256 لجسم الاستجابة ويرسله في `ETag`. إذا أرسل العميل `If-None-Match` بنفس القيمة يردّ `304` بلا جسم.
@@ -36,22 +50,44 @@ docker compose up -d                       # postgres + redis
 ### قبل التحسين
 ```bash
 Caching__Enabled=false dotnet run --project src/Host
-k6 run -e LABEL=before -e USE_ETAG=false k6/products-load-test.js
 ```
 ### بعد التحسين
 ```bash
 Caching__Enabled=true dotnet run --project src/Host
-k6 run -e LABEL=after -e USE_ETAG=true k6/products-load-test.js
 ```
 > لنتائج عادلة: أضف ≥ 10,000 منتج قبل القياس، وشغّل الاختبارين على نفس الجهاز وبنفس البيانات.
 
 ### اختبار الحداثة (التعديل يظهر فوراً)
 ```bash
 # أنشئ مستخدماً ثم حوّله Admin:  UPDATE users."Users" SET "RoleId"=1 WHERE "Email"='admin@x.com';
-k6 run -e ADMIN_EMAIL=admin@x.com -e ADMIN_PASSWORD=Admin123 k6/freshness-test.js
 ```
 
-## النتائج (املأها من `k6/results/*.json`)
+## مشكلة N+1 (الاستدعاءات بين الخدمات)
+| الطلب | قبل | بعد |
+|---|---|---|
+| قائمة المنتجات (صفحة من N منتج) | استعلامان SQL + **N** استدعاء gRPC (`CheckQuantity` لكل منتج) | استعلامان SQL + **استدعاء gRPC واحد** (`CheckQuantities`) |
+| إنشاء طلب من N سطر | **N** استدعاء gRPC متسلسل (`ReserveQuantity`)، كل منها في معاملة منفصلة (~6 استعلامات لكل سطر) | **استدعاء gRPC واحد** (`ReserveItems`) بعدد ثابت من الاستعلامات في معاملة واحدة |
+| التراجع عند الفشل | N استدعاء `ReleaseQuantity` | استدعاء واحد `ReleaseOrder` (آمن عند التكرار) |
+
+- `ReserveItems` يحجز كل أسطر الطلب **أو لا شيء** (لا يبقى حجز جزئي عند نقص المخزون)، ويقفل صفوف المخزون بترتيب `product_id` لتجنّب الـ deadlock.
+- استعلامات EF Core سليمة: لا يوجد Lazy Loading، والطلبات تُحمَّل مع عناصرها باستعلام واحد (`Include`).
+
+## نسخة القراءة (Read Replica)
+- **قاعدة ثانية للقراءة فقط:** الحاوية `postgres-replica` (المنفذ 5433) نسخة من القاعدة الأساسية تتزامن معها لحظياً عبر **Streaming Replication**، وترفض أي كتابة (`cannot execute INSERT in a read-only transaction`).
+- **التوجيه:** كل الكتابات على القاعدة الأساسية. قراءات المنتجات (عند غياب الكاش) والطلبات تذهب إلى نسخة القراءة.
+- **يرى المستخدم ما أنشأه فوراً:** بعد كل كتابة يُحفظ موقع الكتابة في الـ WAL (`pg_current_wal_lsn()`) في Redis للمستخدم الكاتب (ولكل المنتجات عند تعديل منتج). قبل القراءة من النسخة يُتحقق أنها طبّقت هذا الموقع (`pg_last_wal_replay_lsn()`)، وإلا تُقرأ تلك القراءة من الأساسية. هذا يمنع أيضاً إعادة ملء الكاش ببيانات قديمة.
+- **عند تعطل النسخة أو Redis:** تذهب القراءات تلقائياً إلى الأساسية، وتعود للنسخة بعد 30 ثانية.
+- الترويسة `X-Db-Read: REPLICA | PRIMARY` تبيّن أي قاعدة أجابت. للقياس "قبل": `ReadReplica__Enabled=false`.
+
+| الاختبار | النتيجة |
+|---|---|
+| قراءة عادية | `REPLICA` |
+| إيقاف التطبيق على النسخة مؤقتاً ثم إنشاء طلب: الزبون يعرض طلباته | `PRIMARY` ويظهر الطلب فوراً |
+| نفس الحالة: المدير (ليس الكاتب) يعرض كل الطلبات | `REPLICA` (يظهر الطلب بعد اللحاق) |
+| تعديل سعر منتج والنسخة متأخرة | `PRIMARY` + الكاش يُملأ بالسعر الجديد |
+| إيقاف النسخة / إيقاف Redis | `PRIMARY` بلا أخطاء، ثم العودة تلقائياً |
+
+## النتائج
 | المقياس | قبل | بعد |
 |---|---|---|
 | p50 قائمة المنتجات | | |

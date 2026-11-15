@@ -1,5 +1,6 @@
 using Asp.Versioning;
 using Microsoft.AspNetCore.Authorization; // Added
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Modules.Products.Contracts;
 using Modules.Products.Interfaces;
@@ -51,6 +52,9 @@ public class ProductsController : BaseController
     [ETag]
     public async Task<IActionResult> GetProducts([FromQuery] string? category, [FromQuery] int page = 1, [FromQuery] int pageSize = 10)
     {
+        var invalid = ValidateListQuery(category, page, pageSize);
+        if (invalid is not null) return invalid;
+
         var response = await _productService.GetProductsAsync(category, page, pageSize);
         return Ok(response);
     }
@@ -58,7 +62,29 @@ public class ProductsController : BaseController
     [HttpPost("search")]
     public async Task<IActionResult> SearchProducts([FromForm] string? category, [FromForm] int page = 1, [FromForm] int pageSize = 10)
     {
+        var invalid = ValidateListQuery(category, page, pageSize);
+        if (invalid is not null) return invalid;
+
         var response = await _productService.GetProductsAsync(category, page, pageSize);
         return Ok(response);
+    }
+
+    private const int MaxPageSize = 100;
+    private const int MaxCategoryLength = 100;
+
+    // Bounds the list query: protects the database and inventory service from huge pages,
+    // and keeps the number of distinct list cache keys small.
+    private IActionResult? ValidateListQuery(string? category, int page, int pageSize)
+    {
+        if (page < 1)
+            return ProblemResponse(StatusCodes.Status400BadRequest, "Invalid pagination", "page must be 1 or greater.");
+
+        if (pageSize < 1 || pageSize > MaxPageSize)
+            return ProblemResponse(StatusCodes.Status400BadRequest, "Invalid pagination", $"pageSize must be between 1 and {MaxPageSize}.");
+
+        if (category is { Length: > MaxCategoryLength })
+            return ProblemResponse(StatusCodes.Status400BadRequest, "Invalid category", $"category must be at most {MaxCategoryLength} characters.");
+
+        return null;
     }
 }

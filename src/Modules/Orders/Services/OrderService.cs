@@ -5,6 +5,7 @@ using Modules.Orders.Contracts;
 using Modules.Orders.Entities;
 using Modules.Orders.Interfaces;
 using Modules.Orders.Persistence;
+using Shared.Data;
 using Shared.Events;
 using Shared.Queries;
 
@@ -13,14 +14,24 @@ namespace Modules.Orders.Services;
 
 public class OrderService : IOrderService
 {
-    private readonly OrdersDbContext _dbContext;
+    private readonly OrdersDbContext _dbContext;         // primary: writes + read-before-write
+    private readonly OrdersReadDbContext _readDbContext; // read replica
+    private readonly ReadRouter _readRouter;
     private readonly ISender _sender;
     private readonly IPublisher _publisher;
     private readonly InventoryService.InventoryServiceClient _inventoryClient;
 
-    public OrderService(OrdersDbContext dbContext, ISender sender, IPublisher publisher, InventoryService.InventoryServiceClient inventoryClient)
+    public OrderService(
+        OrdersDbContext dbContext,
+        OrdersReadDbContext readDbContext,
+        ReadRouter readRouter,
+        ISender sender,
+        IPublisher publisher,
+        InventoryService.InventoryServiceClient inventoryClient)
     {
         _dbContext = dbContext;
+        _readDbContext = readDbContext;
+        _readRouter = readRouter;
         _sender = sender;
         _publisher = publisher;
         _inventoryClient = inventoryClient;
@@ -47,28 +58,28 @@ public class OrderService : IOrderService
 
         var order = new Order(userId, items);
 
-        // 2. RESERVATION PHASE: Network Call to Node.js Microservice
-        var deadline = DateTime.UtcNow.AddMilliseconds(2000); 
-        var reservedItems = new List<(Guid ProductId, int Quantity)>();
-        
+        // 2. RESERVATION PHASE: ONE gRPC call reserves every line in a single inventory transaction
+        //    (all lines or none), instead of one call per line (avoids N+1).
+        var reserveRequest = new ReserveItemsRequest { OrderId = order.Id.ToString() };
+        reserveRequest.Items.AddRange(order.Items.Select(i => new ReservationItem
+        {
+            ProductId = i.ProductId.ToString(),
+            Amount = i.Quantity
+        }));
+
         try
         {
-            foreach (var item in order.Items)
-            {
-                await _inventoryClient.ReserveQuantityAsync(new ReserveQuantityRequest 
-                { 
-                    ProductId = item.ProductId.ToString(),
-                    Amount = item.Quantity,
-                    OrderId = order.Id.ToString() 
-                }, deadline: deadline);
+            var reservation = await _inventoryClient.ReserveItemsAsync(
+                reserveRequest, deadline: DateTime.UtcNow.AddMilliseconds(2000));
 
-                reservedItems.Add((item.ProductId, item.Quantity));
-            }
+            if (!reservation.Success)
+                return (false, null, DescribeReservationFailure(reservation, productsById));
         }
         catch (RpcException ex)
         {
-            // Rollback if gRPC fails
-            await RollbackReservationsAsync(reservedItems, order.Id.ToString());
+            // The call failed or timed out. A timeout can still have committed on the inventory side,
+            // so release defensively; ReleaseOrder is idempotent and does nothing if nothing was reserved.
+            await ReleaseReservationAsync(order.Id);
             return (false, null, $"Inventory reservation failed: {ex.Status.Detail}");
         }
 
@@ -80,81 +91,95 @@ public class OrderService : IOrderService
         }
         catch (Exception)
         {
-            // Rollback if local DB fails
-            await RollbackReservationsAsync(reservedItems, order.Id.ToString());
+            // Compensate: give the reserved stock back
+            await ReleaseReservationAsync(order.Id);
             return (false, null, "Failed to save order. Inventory reservation has been rolled back.");
         }
 
-        // FIXED: Added the missing return statement for the success path
         return (true, MapToResponse(order), null);
     }
 
-    // --- SAGA ROLLBACK HELPER ---
-    private async Task RollbackReservationsAsync(List<(Guid ProductId, int Quantity)> itemsToRollback, string orderId)
+    // Builds the error message for a rejected reservation. The "Insufficient stock for '<name>'. ...
+    // Available: N" format is what the frontend parses to show which product ran out.
+    private static string DescribeReservationFailure(ReserveItemsResponse reservation, IReadOnlyDictionary<Guid, ProductSummary> productsById)
     {
-        if (!itemsToRollback.Any()) return;
+        string NameOf(string productId) =>
+            Guid.TryParse(productId, out var id) && productsById.TryGetValue(id, out var p) ? p.Name : productId;
 
-        var rollbackOptions = new CallOptions().WithDeadline(DateTime.UtcNow.AddMilliseconds(2000));
-        
-        foreach (var item in itemsToRollback)
+        var shortage = reservation.Shortages.FirstOrDefault();
+        if (shortage != null)
+            return $"Insufficient stock for '{NameOf(shortage.ProductId)}'. Requested: {shortage.Requested}, Available: {shortage.Available}.";
+
+        var missing = reservation.MissingProductIds.FirstOrDefault();
+        if (missing != null)
+            return $"Product '{NameOf(missing)}' is not available in inventory.";
+
+        return $"Inventory reservation failed: {reservation.Message}";
+    }
+
+    // --- SAGA ROLLBACK HELPER: one call releases everything reserved for the order ---
+    private async Task ReleaseReservationAsync(Guid orderId)
+    {
+        try
         {
-            try 
-            {
-                // FIXED: Changed to ReleaseQuantityRequest to match the proto contract
-                await _inventoryClient.ReleaseQuantityAsync(new ReleaseQuantityRequest 
-                { 
-                    ProductId = item.ProductId.ToString(), 
-                    Amount = item.Quantity, // FIXED: Changed ReleaseQuantity to Amount
-                    OrderId = orderId       // FIXED: Added missing OrderId for idempotency mapping
-                }, rollbackOptions); 
-            }
-            catch (RpcException)
-            {
-                // Extreme Edge Case: C# failed to save, AND Node.js crashed during the rollback.
-                // In production, this requires an ILogger.LogCritical call to trigger a manual reconciliation alert.
-            }
+            await _inventoryClient.ReleaseOrderAsync(
+                new ReleaseOrderRequest { OrderId = orderId.ToString() },
+                deadline: DateTime.UtcNow.AddMilliseconds(2000));
+        }
+        catch (RpcException)
+        {
+            // Extreme edge case: the order could not be saved AND the inventory service is unreachable.
+            // In production this needs a LogCritical + reconciliation job; reservations stay keyed by order id.
         }
     }
 
+    // Reads go to the read replica when it already contains the caller's own writes
+    // (the router adds the current user's scope), otherwise to the primary.
     public async Task<(bool Success, OrderResponse? Data, string? Error)> GetOrderAsync(Guid orderId)
     {
-        var order = await _dbContext.Orders
-            .AsNoTracking()
-            .Include(o => o.Items)
-            .FirstOrDefaultAsync(o => o.Id == orderId);
+        var order = await _readRouter.ReadAsync<OrdersDbContext, Order?>(_dbContext, _readDbContext,
+            (db, ct) => db.Orders
+                .AsNoTracking()
+                .Include(o => o.Items)
+                .FirstOrDefaultAsync(o => o.Id == orderId, ct));
 
         if (order == null)
             return (false, null, "Order not found.");
 
         return (true, MapToResponse(order), null);
     }
-public async Task<PaginatedOrdersResponse> GetOrdersAsync(
-    Guid? userId,
-    int page = 1,
-    int pageSize = 20)
-{
-    if (page < 1 || pageSize < 1 || pageSize > 100)
-        throw new ArgumentOutOfRangeException(
-            nameof(page), "Invalid pagination parameters.");
 
-    IQueryable<Order> query = _dbContext.Orders
-        .AsNoTracking()
-        .Include(o => o.Items);
+    public async Task<PaginatedOrdersResponse> GetOrdersAsync(
+        Guid? userId,
+        int page = 1,
+        int pageSize = 20)
+    {
+        if (page < 1 || pageSize < 1 || pageSize > 100)
+            throw new ArgumentOutOfRangeException(
+                nameof(page), "Invalid pagination parameters.");
 
-    if (userId.HasValue)
-        query = query.Where(o => o.UserId == userId.Value);
+        var orders = await _readRouter.ReadAsync<OrdersDbContext, List<Order>>(_dbContext, _readDbContext,
+            (db, ct) =>
+            {
+                IQueryable<Order> query = db.Orders
+                    .AsNoTracking()
+                    .Include(o => o.Items);
 
-    var orders = await query
-        .OrderByDescending(o => o.CreatedAt)
-        .ThenByDescending(o => o.Id)
-        .Skip((page - 1) * pageSize)
-        .Take(pageSize + 1)
-        .ToListAsync();
+                if (userId.HasValue)
+                    query = query.Where(o => o.UserId == userId.Value);
 
-    return new PaginatedOrdersResponse(
-        orders.Take(pageSize).Select(MapToResponse).ToList(),
-        orders.Count > pageSize);
-}
+                return query
+                    .OrderByDescending(o => o.CreatedAt)
+                    .ThenByDescending(o => o.Id)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize + 1)
+                    .ToListAsync(ct);
+            });
+
+        return new PaginatedOrdersResponse(
+            orders.Take(pageSize).Select(MapToResponse).ToList(),
+            orders.Count > pageSize);
+    }
     public async Task<(bool Success, OrderResponse? Data, string? Error)> UpdateOrderStatusAsync(Guid orderId, UpdateOrderStatusRequest request)
     {
         var order = await _dbContext.Orders

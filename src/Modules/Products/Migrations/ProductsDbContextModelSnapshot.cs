@@ -53,6 +53,9 @@ namespace Modules.Products.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CreatedAt", "Id")
+                        .HasDatabaseName("IX_Products_CreatedAt_Id");
+
                     b.ToTable("Products", "products");
                 });
 #pragma warning restore 612, 618

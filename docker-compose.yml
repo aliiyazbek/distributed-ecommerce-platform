@@ -1,16 +1,48 @@
 version: '3.8'
 services:
+  # PRIMARY: every write goes here (Requirement 3: read replica)
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ecommerce_user
       POSTGRES_PASSWORD: ecommerce_password
       POSTGRES_DB: ecommerce_db
+    # hba_file: allow the replica to stream WAL over the Docker network.
+    # wal_keep_size: keep enough WAL for the replica to catch up after a short outage.
+    command: ["postgres", "-c", "hba_file=/etc/postgresql/pg_hba.conf", "-c", "wal_keep_size=256MB"]
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      
+      - ./docker/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecommerce_user -d ecommerce_db"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # READ REPLICA: read-only copy kept in sync by streaming replication.
+  # First start clones the primary; rebuild it with:
+  #   docker compose rm -sf postgres-replica && docker volume rm distributed-ecommerce-platform_pgdata-replica
+  postgres-replica:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ecommerce_user          # used once, to create the replication role on the primary
+      POSTGRES_PASSWORD: ecommerce_password
+      POSTGRES_DB: ecommerce_db
+      PRIMARY_HOST: postgres
+      REPLICATION_USER: replicator
+      REPLICATION_PASSWORD: replicator_password
+    entrypoint: ["sh", "/usr/local/bin/replica-entrypoint.sh"]
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata-replica:/var/lib/postgresql/data
+      - ./docker/postgres/replica-entrypoint.sh:/usr/local/bin/replica-entrypoint.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   redis:
     image: redis:7-alpine
     # allkeys-lru: when memory is full Redis evicts the least recently used keys (safe for a pure cache)
@@ -36,3 +68,4 @@ services:
 
 volumes:
   pgdata:
+  pgdata-replica:
