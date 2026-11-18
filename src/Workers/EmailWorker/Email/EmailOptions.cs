@@ -20,4 +20,23 @@ public sealed class EmailOptions
     public string FromName { get; set; } = "E-Commerce Store";
 
     public int TimeoutSeconds { get; set; } = 15;
+
+    // Demo switch: every send fails with a temporary error, so a message visibly goes through
+    // the retries (10 s apart) and ends in the DLQ. Turn on with: Email__SimulateFailure=true
+    public bool SimulateFailure { get; set; }
+
+    public static readonly string[] SecurityValues = ["None", "StartTls", "SslOnConnect"];
+
+    // Checked once at startup (ValidateOnStart): a typo in the settings stops the worker immediately
+    // instead of failing on every email later.
+    public bool IsValid(out string error)
+    {
+        error = string.Empty;
+        if (string.IsNullOrWhiteSpace(Host)) error = "Email:Host is required.";
+        else if (Port is < 1 or > 65535) error = "Email:Port must be between 1 and 65535.";
+        else if (!SecurityValues.Contains(Security)) error = $"Email:Security must be one of: {string.Join(", ", SecurityValues)}.";
+        else if (string.IsNullOrWhiteSpace(FromAddress)) error = "Email:FromAddress is required.";
+        else if (!string.IsNullOrEmpty(UserName) && string.IsNullOrEmpty(Password)) error = "Email:Password is required when Email:UserName is set.";
+        return error.Length == 0;
+    }
 }

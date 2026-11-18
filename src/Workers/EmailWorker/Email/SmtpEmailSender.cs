@@ -23,6 +23,9 @@ public sealed class SmtpEmailSender : IEmailSender
 
     public async Task SendOrderConfirmationAsync(OrderCreatedEvent order, CancellationToken cancellationToken)
     {
+        if (_options.SimulateFailure)
+            throw new EmailSendException("Simulated SMTP outage (Email:SimulateFailure=true)", isPermanent: false);
+
         MimeMessage message;
         try
         {
