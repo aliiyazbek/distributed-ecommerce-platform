@@ -10,12 +10,13 @@ Workflow: `main` is protected. Work goes on a feature branch (e.g. `feature/auth
 
 ## Running locally
 
-Three processes plus infrastructure:
+Four processes plus infrastructure:
 
 ```bash
-docker compose up -d                         # postgres:5432 (primary), postgres-replica:5433 (read replica), redis:6379, mailpit (8025 UI / 1025 SMTP), pgadmin:5050
+docker compose up -d                         # postgres:5432 (primary), postgres-replica:5433 (read replica), redis:6379, rabbitmq (5672 AMQP / 15672 UI, ecommerce/ecommerce_password), mailpit (8025 UI / 1025 SMTP), pgadmin:5050
 node inventory-service/server.js             # gRPC inventory service on :50051 (needs DB_* env vars, see below)
 dotnet run --project src/Host                # ASP.NET API on http://localhost:5169 (Swagger at /swagger in Development)
+dotnet run --project src/Workers/EmailWorker # email worker (Requirement 4): consumes order.created, sends via SMTP (Mailpit by default)
 cd frontend/ecommerce-store && npm run dev   # Vite React store; proxies /api and /images to :5169
 ```
 
@@ -72,6 +73,12 @@ IProductRepository → CachingProductRepositoryDecorator → ProductRepository (
 `postgres-replica` (port 5433) is a hot standby kept in sync by PostgreSQL streaming replication (async) from `postgres`; the primary loads `docker/postgres/pg_hba.conf` to allow the `replicator` role. Products and Orders each have a read-only context (`ProductsReadDbContext`, `OrdersReadDbContext`: subclasses of the primary context pointed at `ConnectionStrings:ReadReplicaConnection`, no tracking, `SaveChanges` throws). Never use them for migrations.
 
 Reads go through `Shared/Data/ReadRouter.ReadAsync(primary, replica, query, scopes)`. It uses the replica only when it is safe: replicas enabled, `ReplicaHealth` not in cooldown, and the replica has replayed (`pg_last_wal_replay_lsn()`) every write the reader must see. After each committed write, `WritePositionInterceptor` (attached to the primary contexts) stores `pg_current_wal_lsn()` in Redis (`ecommerce:rw:<scope>`, atomic max via Lua, TTL `ReadReplica:ConsistencyWindowSeconds`) under the writer's scope (`user:<id>`) plus module scopes (`products` for every catalog write, so nobody reads or caches a catalog older than the latest write). Anything uncertain (Redis down, position not recorded, replica error) sends reads to the primary. Writes and read-before-write (`IProductRepository.GetByIdForUpdateAsync`, `UpdateOrderStatusAsync`), Users (login, duplicate-email check), `GetProductsByIdsQueryHandler` (order prices) and inventory stock always use the primary. Responses carry `X-Db-Read: REPLICA|PRIMARY`. New read paths should go through `ReadRouter`; new write contexts need the interceptor.
+
+### Async messaging (Requirement 4)
+
+Order events go through a **transactional outbox**: `OrderService` adds an `OutboxMessage` (`Modules/Orders/Persistence/Outbox`) in the same `SaveChangesAsync` as the order change (`order.created` on create, `order.status-changed` only when the status really changes), then calls `OutboxSignal.Notify()`. `OutboxPublisher` (hosted service in the API) wakes on that signal or every 2 s, locks rows with `FOR UPDATE SKIP LOCKED`, publishes to the topic exchange `orders.events` with publisher confirms (`message_id` = outbox id, persistent, JSON camelCase), and deletes confirmed rows. Contracts and names live in `src/Shared/Messaging`; `RabbitMqTopology.DeclareAsync` declares the exchange and the email queues and is called by both the API and the worker so arguments always match (declare the queue before publishing, or RabbitMQ drops unroutable messages).
+
+`src/Workers/EmailWorker` is a separate process: manual acks, prefetch 5, MailKit SMTP. Temporary failures are rejected to `email.order-created.retry` (10 s TTL, dead-letters back to `email.order-created`); attempts come from the `x-death` header; permanent failures or the 3rd failure are copied to `email.order-created.dlq` (confirmed) with `x-failure-reason` headers. Handled message ids are stored in `email."ProcessedMessages"` (worker-owned schema, own migrations: `dotnet ef database update --project src/Workers/EmailWorker --context EmailWorkerDbContext`). Delivery is at-least-once. SMTP settings: Mailpit in `appsettings.json`, Gmail via user-secrets; `Email__SimulateFailure=true` forces the retry -> DLQ path. The real-time side (SignalR) binds its own queue to `orders.events`.
 
 ### Frontend (`frontend/ecommerce-store`)
 
