@@ -66,6 +66,24 @@ services:
     depends_on:
       - postgres
 
+  rabbitmq:
+    image: rabbitmq:4-management
+    hostname: rabbitmq            # fixed node name, so stored messages survive container re-creation
+    environment:
+      RABBITMQ_DEFAULT_USER: ecommerce
+      RABBITMQ_DEFAULT_PASS: ecommerce_password
+    ports:
+      - "127.0.0.1:5672:5672"     # AMQP: the API and worker connect here
+      - "127.0.0.1:15672:15672"   # management dashboard
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   pgdata:
   pgdata-replica:
+  rabbitmq-data:

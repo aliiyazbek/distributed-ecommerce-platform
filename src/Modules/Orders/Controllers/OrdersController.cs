@@ -26,7 +26,7 @@ public class OrdersController : BaseController
 
     public async Task<IActionResult> CreateOrder([FromBody] CreateOrderRequest request)
     {
-        var (success, data, error) = await _orderService.CreateOrderAsync(GetUserId(), request);
+        var (success, data, error) = await _orderService.CreateOrderAsync(GetUserId(), GetUserEmail(), request);
 
         if (!success)
             return BadRequest(new { Message = error });
@@ -85,4 +85,9 @@ public async Task<IActionResult> GetOrders(
     }
 
     private Guid GetUserId() => Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+
+    // Requirement 4: the customer's email goes into the OrderCreated event, so the email worker never
+    // has to call the Users module. The JWT handler maps the "email" claim to ClaimTypes.Email.
+    private string GetUserEmail() =>
+        User.FindFirstValue(ClaimTypes.Email) ?? User.FindFirstValue("email")!;
 }
