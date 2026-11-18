@@ -7,9 +7,11 @@ using Microsoft.Extensions.Logging;
 using Modules.Orders.Decorators;
 using Modules.Orders.Interfaces;
 using Modules.Orders.Persistence;
+using Modules.Orders.Persistence.Outbox;
 using Modules.Orders.Services;
 using Modules.Orders.Integration.Protos;
 using Shared.Data;
+using Shared.Messaging;
 
 namespace Modules.Orders;
 
@@ -42,8 +44,13 @@ public static class OrdersModuleExtensions
         // This tells .NET where the future Node.js server will be hosted
         services.AddGrpcClient<InventoryService.InventoryServiceClient>("OrdersInventoryClient",options =>
         {
-            options.Address = new Uri("http://127.0.0.1:50051"); 
+            options.Address = new Uri("http://127.0.0.1:50051");
         });
+
+        // Requirement 4: outbox publisher (background service) + its wake-up signal.
+        services.Configure<RabbitMqOptions>(configuration.GetSection(RabbitMqOptions.SectionName));
+        services.AddSingleton<OutboxSignal>();
+        services.AddHostedService<OutboxPublisher>();
 
         return services;
     }
