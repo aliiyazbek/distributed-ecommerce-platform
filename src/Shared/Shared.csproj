@@ -17,6 +17,7 @@
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.14" />
     <!-- Read-replica routing (Requirement 3): EF/Npgsql for the read router, Redis for write positions -->
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <PackageReference Include="RabbitMQ.Client" Version="7.2.2" />
     <PackageReference Include="StackExchange.Redis" Version="2.7.27" />
   </ItemGroup>
 
