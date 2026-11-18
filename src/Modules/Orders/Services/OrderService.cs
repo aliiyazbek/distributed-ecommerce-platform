@@ -20,19 +20,22 @@ public class OrderService : IOrderService
     private readonly ReadRouter _readRouter;
     private readonly ISender _sender;
     private readonly InventoryService.InventoryServiceClient _inventoryClient;
+    private readonly OutboxSignal _outboxSignal;
 
     public OrderService(
         OrdersDbContext dbContext,
         OrdersReadDbContext readDbContext,
         ReadRouter readRouter,
         ISender sender,
-        InventoryService.InventoryServiceClient inventoryClient)
+        InventoryService.InventoryServiceClient inventoryClient,
+        OutboxSignal outboxSignal)
     {
         _dbContext = dbContext;
         _readDbContext = readDbContext;
         _readRouter = readRouter;
         _sender = sender;
         _inventoryClient = inventoryClient;
+        _outboxSignal = outboxSignal;
     }
 
     public async Task<(bool Success, OrderResponse? Data, string? Error)> CreateOrderAsync(Guid userId, string customerEmail, CreateOrderRequest request)
@@ -99,6 +102,7 @@ public class OrderService : IOrderService
                     order.CreatedAt)));
 
             await _dbContext.SaveChangesAsync();
+            _outboxSignal.Notify(); // publish now instead of waiting for the next poll
         }
         catch (Exception)
         {
@@ -215,6 +219,7 @@ public class OrderService : IOrderService
             new OrderStatusChangedEvent(order.Id, order.UserId, oldStatus.ToString(), newStatus.ToString(), order.UpdatedAt!.Value)));
 
         await _dbContext.SaveChangesAsync();
+        _outboxSignal.Notify(); // publish now instead of waiting for the next poll
 
         return (true, MapToResponse(order), null);
     }
