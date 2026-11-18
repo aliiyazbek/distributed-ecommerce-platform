@@ -5,8 +5,9 @@ using Modules.Orders.Contracts;
 using Modules.Orders.Entities;
 using Modules.Orders.Interfaces;
 using Modules.Orders.Persistence;
+using Modules.Orders.Persistence.Outbox;
 using Shared.Data;
-using Shared.Events;
+using Shared.Messaging;
 using Shared.Queries;
 
 using Modules.Orders.Integration.Protos;
@@ -18,7 +19,6 @@ public class OrderService : IOrderService
     private readonly OrdersReadDbContext _readDbContext; // read replica
     private readonly ReadRouter _readRouter;
     private readonly ISender _sender;
-    private readonly IPublisher _publisher;
     private readonly InventoryService.InventoryServiceClient _inventoryClient;
 
     public OrderService(
@@ -26,18 +26,16 @@ public class OrderService : IOrderService
         OrdersReadDbContext readDbContext,
         ReadRouter readRouter,
         ISender sender,
-        IPublisher publisher,
         InventoryService.InventoryServiceClient inventoryClient)
     {
         _dbContext = dbContext;
         _readDbContext = readDbContext;
         _readRouter = readRouter;
         _sender = sender;
-        _publisher = publisher;
         _inventoryClient = inventoryClient;
     }
 
-    public async Task<(bool Success, OrderResponse? Data, string? Error)> CreateOrderAsync(Guid userId, CreateOrderRequest request)
+    public async Task<(bool Success, OrderResponse? Data, string? Error)> CreateOrderAsync(Guid userId, string customerEmail, CreateOrderRequest request)
     {
         var productIds = request.Items.Select(i => i.ProductId).ToList();
         var products = await _sender.Send(new GetProductsByIdsQuery(productIds));
@@ -87,6 +85,19 @@ public class OrderService : IOrderService
         try
         {
             _dbContext.Orders.Add(order);
+
+            // Requirement 4 (transactional outbox): the OrderCreated event is saved in the SAME
+            // transaction as the order, so it can never be lost between "order saved" and "message sent".
+            _dbContext.OutboxMessages.Add(OutboxMessage.From(
+                OrderEventTopology.OrderCreatedRoutingKey,
+                new OrderCreatedEvent(
+                    order.Id,
+                    order.UserId,
+                    customerEmail,
+                    order.TotalPrice,
+                    order.Items.Select(i => new OrderCreatedItem(i.ProductId, i.ProductName, i.UnitPrice, i.Quantity)).ToList(),
+                    order.CreatedAt)));
+
             await _dbContext.SaveChangesAsync();
         }
         catch (Exception)
@@ -189,10 +200,21 @@ public class OrderService : IOrderService
         if (order == null)
             return (false, null, "Order not found.");
 
-        order.ChangeStatus(Enum.Parse<OrderStatus>(request.Status, ignoreCase: true));
-        await _dbContext.SaveChangesAsync();
+        var oldStatus = order.Status;
+        var newStatus = Enum.Parse<OrderStatus>(request.Status, ignoreCase: true);
 
-        await _publisher.Publish(new OrderStatusChangedIntegrationEvent(order.Id, order.UserId, order.Status.ToString()));
+        // Saving the same status again is not a change: no event.
+        if (oldStatus == newStatus)
+            return (true, MapToResponse(order), null);
+
+        order.ChangeStatus(newStatus);
+
+        // Requirement 4 (transactional outbox): saved with the status change, consumed by the real-time side.
+        _dbContext.OutboxMessages.Add(OutboxMessage.From(
+            OrderEventTopology.OrderStatusChangedRoutingKey,
+            new OrderStatusChangedEvent(order.Id, order.UserId, oldStatus.ToString(), newStatus.ToString(), order.UpdatedAt!.Value)));
+
+        await _dbContext.SaveChangesAsync();
 
         return (true, MapToResponse(order), null);
     }

@@ -18,12 +18,12 @@ public class LoggingOrderServiceDecorator : IOrderService
         _logger = logger;
     }
 
-    public async Task<(bool Success, OrderResponse? Data, string? Error)> CreateOrderAsync(Guid userId, CreateOrderRequest request)
+    public async Task<(bool Success, OrderResponse? Data, string? Error)> CreateOrderAsync(Guid userId, string customerEmail, CreateOrderRequest request)
     {
         _logger.LogInformation("Creating order for user {UserId} with {ItemCount} items", userId, request.Items.Count);
         var stopwatch = Stopwatch.StartNew();
 
-        var result = await _innerService.CreateOrderAsync(userId, request);
+        var result = await _innerService.CreateOrderAsync(userId, customerEmail, request);
 
         stopwatch.Stop();
 
