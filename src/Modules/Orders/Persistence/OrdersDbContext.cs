@@ -1,11 +1,14 @@
 using Microsoft.EntityFrameworkCore;
 using Modules.Orders.Entities;
+using Modules.Orders.Persistence.Outbox;
 
 namespace Modules.Orders.Persistence;
 
 public class OrdersDbContext : DbContext
 {
     public OrdersDbContext(DbContextOptions<OrdersDbContext> options) : base(options) { }
+
+    public DbSet<OutboxMessage> OutboxMessages { get; set; }
 
     // Used by OrdersReadDbContext: same model, different connection (the read replica).
     protected OrdersDbContext(DbContextOptions options) : base(options) { }
@@ -41,6 +44,16 @@ public class OrdersDbContext : DbContext
             builder.HasKey(i => i.Id);
             builder.Property(i => i.ProductName).IsRequired().HasMaxLength(255);
             builder.Property(i => i.UnitPrice).HasPrecision(18, 2);
+        });
+
+                modelBuilder.Entity<OutboxMessage>(builder =>
+        {
+            builder.ToTable("OutboxMessages");
+            builder.HasKey(m => m.Id);
+            builder.Property(m => m.RoutingKey).IsRequired().HasMaxLength(100);
+            builder.Property(m => m.Payload).IsRequired().HasColumnType("jsonb");
+            // The publisher always sends the oldest waiting messages first.
+            builder.HasIndex(m => m.OccurredAt);
         });
 
         base.OnModelCreating(modelBuilder);

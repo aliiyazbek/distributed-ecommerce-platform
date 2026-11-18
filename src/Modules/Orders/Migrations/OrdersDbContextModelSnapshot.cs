@@ -95,6 +95,31 @@ namespace Modules.Orders.Migrations
                     b.ToTable("OrderItems", "orders");
                 });
 
+            modelBuilder.Entity("Modules.Orders.Persistence.Outbox.OutboxMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("RoutingKey")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OccurredAt");
+
+                    b.ToTable("OutboxMessages", "orders");
+                });
+
             modelBuilder.Entity("Modules.Orders.Entities.OrderItem", b =>
                 {
                     b.HasOne("Modules.Orders.Entities.Order", null)
