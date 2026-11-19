@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using EmailWorker.Email;
@@ -23,16 +24,29 @@ namespace EmailWorker.Messaging;
 //   - permanent failure, or the last attempt failed -> copied to email.order-created.dlq (confirmed by
 //     RabbitMQ) with the reason in its headers, then removed from the main queue.
 // No email is sent twice: message ids already in email."ProcessedMessages" are acknowledged and skipped.
+//
+// Parallel sending: sending an email is I/O-bound (the worker mostly waits for the mail server), so the
+// RabbitMQ client dispatches up to Email:MaxParallelSends deliveries at the same time on the .NET thread
+// pool (no custom threads). Prefetch equals that number, so each parallel slot has one message ready.
+// The few operations on the shared RabbitMQ channels (ack, reject, DLQ publish) are serialized by a
+// small lock; the slow part, sending the email, runs fully in parallel.
 public sealed class OrderCreatedConsumer : BackgroundService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(5);
-    private const ushort Prefetch = 5;
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IEmailSender _emailSender;
     private readonly RabbitMqOptions _options;
     private readonly ILogger<OrderCreatedConsumer> _logger;
+    private readonly ushort _parallelism;
+
+    // Channel operations are not run concurrently: one handler at a time may ack, reject or publish.
+    private readonly SemaphoreSlim _channelLock = new(1, 1);
+
+    // Message ids being processed right now. Two copies of the same message (e.g. an outbox re-publish)
+    // handled at the same moment would both pass the ProcessedMessages check and send two emails.
+    private readonly ConcurrentDictionary<Guid, byte> _inProgress = new();
 
     private IConnection? _connection;
     private IChannel? _consumeChannel;
@@ -42,11 +56,13 @@ public sealed class OrderCreatedConsumer : BackgroundService
         IServiceScopeFactory scopeFactory,
         IEmailSender emailSender,
         IOptions<RabbitMqOptions> options,
+        IOptions<EmailOptions> emailOptions,
         ILogger<OrderCreatedConsumer> logger)
     {
         _scopeFactory = scopeFactory;
         _emailSender = emailSender;
         _options = options.Value;
+        _parallelism = (ushort)emailOptions.Value.MaxParallelSends;
         _logger = logger;
     }
 
@@ -76,25 +92,29 @@ public sealed class OrderCreatedConsumer : BackgroundService
         _publishChannel = await _connection.CreateChannelAsync(
             new CreateChannelOptions(publisherConfirmationsEnabled: true, publisherConfirmationTrackingEnabled: true),
             stoppingToken);
-        _consumeChannel = await _connection.CreateChannelAsync(cancellationToken: stoppingToken);
+        // consumerDispatchConcurrency: up to _parallelism deliveries are handled at the same time.
+        _consumeChannel = await _connection.CreateChannelAsync(
+            new CreateChannelOptions(publisherConfirmationsEnabled: false, publisherConfirmationTrackingEnabled: false,
+                consumerDispatchConcurrency: _parallelism),
+            stoppingToken);
 
         // Same declarations as the API: the queues exist even if the API has never run.
         await RabbitMqTopology.DeclareAsync(_consumeChannel, stoppingToken);
 
-        // Prefetch: at most 5 unacknowledged messages in this worker at a time.
-        await _consumeChannel.BasicQosAsync(prefetchSize: 0, prefetchCount: Prefetch, global: false, stoppingToken);
+        // Prefetch = parallelism: at most that many unacknowledged messages in this worker at a time.
+        await _consumeChannel.BasicQosAsync(prefetchSize: 0, prefetchCount: _parallelism, global: false, stoppingToken);
 
         var consumer = new AsyncEventingBasicConsumer(_consumeChannel);
         consumer.ReceivedAsync += (_, delivery) => HandleAsync(delivery, stoppingToken);
 
         await _consumeChannel.BasicConsumeAsync(RabbitMqTopology.EmailQueue, autoAck: false, consumer, stoppingToken);
-        _logger.LogInformation("Email worker consuming '{Queue}' (prefetch {Prefetch})", RabbitMqTopology.EmailQueue, Prefetch);
+        _logger.LogInformation("Email worker consuming '{Queue}' ({Parallel} emails in parallel)", RabbitMqTopology.EmailQueue, _parallelism);
     }
 
     private async Task HandleAsync(BasicDeliverEventArgs delivery, CancellationToken stoppingToken)
     {
-        var channel = _consumeChannel!;
         var attempt = RejectionCount(delivery.BasicProperties) + 1;
+        Guid? claimed = null;
 
         try
         {
@@ -120,11 +140,20 @@ public sealed class OrderCreatedConsumer : BackgroundService
                 return;
             }
 
+            // Another handler is processing a copy of this very message right now: this copy is a duplicate.
+            if (!_inProgress.TryAdd(messageId, 0))
+            {
+                _logger.LogInformation("Message {MessageId} is already being processed; dropping this duplicate copy", messageId);
+                await AckAsync(delivery);
+                return;
+            }
+            claimed = messageId;
+
             // Idempotency: this message was already handled (redelivery or duplicate publish).
             if (await AlreadyProcessedAsync(messageId, stoppingToken))
             {
                 _logger.LogInformation("Message {MessageId} (order {OrderId}) already processed; skipping", messageId, order.OrderId);
-                await channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, CancellationToken.None);
+                await AckAsync(delivery);
                 return;
             }
 
@@ -145,14 +174,14 @@ public sealed class OrderCreatedConsumer : BackgroundService
                 _logger.LogWarning("Email for order {OrderId} failed on attempt {Attempt}/{Max}: {Error}. Retrying in {Delay} s",
                     order.OrderId, attempt, RabbitMqTopology.EmailMaxAttempts, ex.Message, RabbitMqTopology.EmailRetryDelayMs / 1000);
                 // requeue: false -> dead-lettered to the retry queue (see RabbitMqTopology).
-                await channel.BasicRejectAsync(delivery.DeliveryTag, requeue: false, CancellationToken.None);
+                await RejectAsync(delivery);
                 return;
             }
 
             // The email is out. Record it, then acknowledge. If recording fails we still acknowledge:
             // a second email would be worse than a missing row.
             await MarkProcessedAsync(messageId, order.OrderId);
-            await channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, CancellationToken.None);
+            await AckAsync(delivery);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
@@ -165,8 +194,26 @@ public sealed class OrderCreatedConsumer : BackgroundService
             if (attempt >= RabbitMqTopology.EmailMaxAttempts)
                 await DeadLetterAsync(delivery, $"Unexpected error: {ex.Message}", attempt);
             else
-                await channel.BasicRejectAsync(delivery.DeliveryTag, requeue: false, CancellationToken.None);
+                await RejectAsync(delivery);
         }
+        finally
+        {
+            if (claimed is { } id) _inProgress.TryRemove(id, out _);
+        }
+    }
+
+    private async Task AckAsync(BasicDeliverEventArgs delivery)
+    {
+        await _channelLock.WaitAsync();
+        try { await _consumeChannel!.BasicAckAsync(delivery.DeliveryTag, multiple: false, CancellationToken.None); }
+        finally { _channelLock.Release(); }
+    }
+
+    private async Task RejectAsync(BasicDeliverEventArgs delivery)
+    {
+        await _channelLock.WaitAsync();
+        try { await _consumeChannel!.BasicRejectAsync(delivery.DeliveryTag, requeue: false, CancellationToken.None); }
+        finally { _channelLock.Release(); }
     }
 
     // Copies the message to the DLQ, waits for RabbitMQ's confirm, then removes it from the main queue.
@@ -190,17 +237,24 @@ public sealed class OrderCreatedConsumer : BackgroundService
             }
         };
 
+        var moved = false;
+        await _channelLock.WaitAsync();
         try
         {
             await _publishChannel!.BasicPublishAsync(exchange: "", routingKey: RabbitMqTopology.EmailDeadLetterQueue,
                 mandatory: true, basicProperties: properties, body: delivery.Body, cancellationToken: CancellationToken.None);
             await _consumeChannel!.BasicAckAsync(delivery.DeliveryTag, multiple: false, CancellationToken.None);
+            moved = true;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Could not move delivery {DeliveryTag} to the DLQ; rejecting it to the retry queue", delivery.DeliveryTag);
-            await _consumeChannel!.BasicRejectAsync(delivery.DeliveryTag, requeue: false, CancellationToken.None);
         }
+        finally
+        {
+            _channelLock.Release();
+        }
+        if (!moved) await RejectAsync(delivery);
     }
 
     // How many times this message was already rejected from the main queue. RabbitMQ keeps this count in

@@ -25,6 +25,11 @@ public sealed class EmailOptions
     // the retries (10 s apart) and ends in the DLQ. Turn on with: Email__SimulateFailure=true
     public bool SimulateFailure { get; set; }
 
+    // How many emails are sent at the same time. Sending is I/O-bound (most of the time is spent waiting for
+    // the mail server), so a few parallel sends multiply throughput. Kept small because providers such as
+    // Gmail limit how fast one account may send. Also used as the RabbitMQ prefetch count.
+    public int MaxParallelSends { get; set; } = 5;
+
     public static readonly string[] SecurityValues = ["None", "StartTls", "SslOnConnect"];
 
     // Checked once at startup (ValidateOnStart): a typo in the settings stops the worker immediately
@@ -37,6 +42,7 @@ public sealed class EmailOptions
         else if (!SecurityValues.Contains(Security)) error = $"Email:Security must be one of: {string.Join(", ", SecurityValues)}.";
         else if (string.IsNullOrWhiteSpace(FromAddress)) error = "Email:FromAddress is required.";
         else if (!string.IsNullOrEmpty(UserName) && string.IsNullOrEmpty(Password)) error = "Email:Password is required when Email:UserName is set.";
+        else if (MaxParallelSends is < 1 or > 20) error = "Email:MaxParallelSends must be between 1 and 20.";
         return error.Length == 0;
     }
 }
