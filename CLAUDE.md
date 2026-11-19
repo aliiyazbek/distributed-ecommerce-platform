@@ -17,7 +17,7 @@ docker compose up -d                         # postgres:5432 (primary), postgres
 node inventory-service/server.js             # gRPC inventory service on :50051 (needs DB_* env vars, see below)
 dotnet run --project src/Host                # ASP.NET API on http://localhost:5169 (Swagger at /swagger in Development)
 dotnet run --project src/Workers/EmailWorker # email worker (Requirement 4): consumes order.created, sends via SMTP (Mailpit by default)
-cd frontend/ecommerce-store && npm run dev   # Vite React store; proxies /api and /images to :5169
+cd frontend/ecommerce-store && npm run dev   # Vite React store; proxies /api, /images and /hubs (WebSocket) to :5169
 ```
 
 - `inventory-service` reads `DB_USER`, `DB_HOST`, `DB_NAME`, `DB_PASSWORD`, `DB_PORT` (and optional `GRPC_PORT`) via `dotenv` from a `.env` file (git-ignored). Use the same Postgres credentials as `docker-compose.yml`. It creates its own `inventory` schema on startup.
@@ -79,6 +79,12 @@ Reads go through `Shared/Data/ReadRouter.ReadAsync(primary, replica, query, scop
 Order events go through a **transactional outbox**: `OrderService` adds an `OutboxMessage` (`Modules/Orders/Persistence/Outbox`) in the same `SaveChangesAsync` as the order change (`order.created` on create, `order.status-changed` only when the status really changes), then calls `OutboxSignal.Notify()`. `OutboxPublisher` (hosted service in the API) wakes on that signal or every 2 s, locks rows with `FOR UPDATE SKIP LOCKED`, publishes to the topic exchange `orders.events` with publisher confirms (`message_id` = outbox id, persistent, JSON camelCase), and deletes confirmed rows. Contracts and names live in `src/Shared/Messaging`; `RabbitMqTopology.DeclareAsync` declares the exchange and the email queues and is called by both the API and the worker so arguments always match (declare the queue before publishing, or RabbitMQ drops unroutable messages).
 
 `src/Workers/EmailWorker` is a separate process: manual acks, prefetch 5, MailKit SMTP. Temporary failures are rejected to `email.order-created.retry` (10 s TTL, dead-letters back to `email.order-created`); attempts come from the `x-death` header; permanent failures or the 3rd failure are copied to `email.order-created.dlq` (confirmed) with `x-failure-reason` headers. Handled message ids are stored in `email."ProcessedMessages"` (worker-owned schema, own migrations: `dotnet ef database update --project src/Workers/EmailWorker --context EmailWorkerDbContext`). Delivery is at-least-once. SMTP settings: Mailpit in `appsettings.json`, Gmail via user-secrets; `Email__SimulateFailure=true` forces the retry -> DLQ path. The real-time side (SignalR) binds its own queue to `orders.events`.
+
+Real-time channels live in `Modules/Notifications/Realtime`. `OrderEventsConsumer` (hosted service in the API) binds the durable queue `realtime.order-events` to `order.created` and `order.status-changed`, pushes through SignalR, then acks (bad JSON is rejected without requeue; a failed push is requeued once; it retries the RabbitMQ connection every 5 s). There are two hubs, and neither has methods. `/hubs/orders` (`OrdersHub`, `[Authorize(Roles = "Customer")]`) gets `OrderStatusChanged`, sent to the owner only with `Clients.User(userId)`. `/hubs/admin-orders` (`AdminOrdersHub`, `[Authorize(Roles = "Admin")]`) gets `OrderCreated` through `Clients.All`. Browsers can't set headers on WebSockets, so `Program.cs` reads `?access_token=` for `/hubs` paths only. `CloseOnAuthenticationExpiration` closes a connection when its JWT expires. Order statuses are `Pending, Approved, Shipped, Delivered, Cancelled` (stored as strings, so adding one needs no migration).
+
+On the frontend, `src/services/realtime.js` uses `@microsoft/signalr` 10 (matching the server), reconnects forever, and reloads after a reconnect. `OrderDetails` subscribes only for customers and applies a push only when its `changedAt` is newer (`latestChange`/`applyStatusChange`, at-least-once safe). `OrdersList live` (All orders) prepends new orders without duplicates (`addNewOrder`/`withNewOrders`).
+
+Running more than one API instance (Requirement 5) will need a SignalR backplane (e.g. Redis), because each event is consumed by one instance.
 
 ### Frontend (`frontend/ecommerce-store`)
 

@@ -1,13 +1,14 @@
 import './OrderProgress.css'
 import OrderStatusBadge from './OrderStatusBadge'
 
-const stages = ['Pending', 'Shipped', 'Delivered']
+const stages = ['Pending', 'Approved', 'Shipped', 'Delivered']
 
 function StageIcon({ stage, completed }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
       {completed ? <path d="m6 12 4 4 8-8" />
         : stage === 'Pending' ? <><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" /></>
+        : stage === 'Approved' ? <><path d="M9 3h6v3H9z M9 4.5H6v16h12v-16h-3" /><path d="m9 13 2 2 4-4" /></>
         : stage === 'Shipped' ? <><path d="M3 6h11v11H3z M14 10h4l3 4v3h-7" /><circle cx="7" cy="18" r="2" /><circle cx="18" cy="18" r="2" /></>
           : <><path d="m12 3 8 5v9l-8 4-8-4V8l8-5Z M4 8l8 5 8-5 M12 13v8" /><path d="m9 9 2 2 4-4" /></>}
     </svg>

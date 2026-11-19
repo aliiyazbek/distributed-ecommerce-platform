@@ -3,9 +3,10 @@ import EmptyState from './EmptyState'
 import OrderStatusBadge from './OrderStatusBadge'
 import useLoad from '../hooks/useLoad'
 import { routes } from '../navigation/routes'
-import { formatMoney, getOrders } from '../services/orderService.js'
+import { addNewOrder, formatMoney, getOrders, withNewOrders } from '../services/orderService.js'
+import { watchNewOrders } from '../services/realtime.js'
 import './OrdersList.css'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 function OrdersSkeleton() {
   return (
@@ -15,9 +16,10 @@ function OrdersSkeleton() {
   )
 }
 
-export default function OrdersList({ title, showCustomer = false, children }) {
+export default function OrdersList({ title, showCustomer = false, live = false, children }) {
 const [page, setPage] = useState(1)
 const pageSize =20
+const [arrived, setArrived] = useState([])
 
 const loadOrders = useCallback(
   signal => getOrders(signal, page, pageSize),
@@ -25,8 +27,13 @@ const loadOrders = useCallback(
 )
 
 const { loading, data, error, retry } = useLoad(loadOrders)
-const orders = data?.items
+const orders = page === 1 ? withNewOrders(arrived, data?.items) : data?.items
   const navigate = useNavigate()
+
+  useEffect(() => {
+    if (!live) return undefined
+    return watchNewOrders(order => setArrived(current => addNewOrder(current, order)), retry)
+  }, [live, retry])
 
   return (
     <main className="page orders-page">
@@ -56,7 +63,7 @@ const orders = data?.items
               </thead>
               <tbody>
                 {orders.map(order => (
-                  <tr key={order.id} onClick={() => navigate(routes.order(order.id))}>
+                  <tr key={order.id} className={order.isNew ? 'orders-row--new' : undefined} onClick={() => navigate(routes.order(order.id))}>
                     <th scope="row" className="order-number">#{order.orderNumber}</th>
                     {showCustomer && <td><span className="customer-id">#{order.customerId}</span></td>}
                     <td>{order.datePlaced}</td>

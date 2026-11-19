@@ -2,6 +2,7 @@ import './OrderStatusBadge.css'
 
 const statusClasses = {
   Pending: 'pending',
+  Approved: 'approved',
   Shipped: 'shipped',
   Delivered: 'delivered',
   Cancelled: 'cancelled',

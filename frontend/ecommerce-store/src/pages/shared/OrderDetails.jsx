@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import Alert from '../../components/Alert'
 import EmptyState from '../../components/EmptyState'
@@ -7,7 +7,8 @@ import OrderStatusBadge from '../../components/OrderStatusBadge'
 import { useAuth } from '../../context/auth-context'
 import useLoad from '../../hooks/useLoad'
 import { routes } from '../../navigation/routes'
-import { formatMoney, getOrder, lineTotal, orderStatuses, updateOrderStatus } from '../../services/orderService.js'
+import { applyStatusChange, formatMoney, getOrder, latestChange, lineTotal, orderStatuses, updateOrderStatus } from '../../services/orderService.js'
+import { watchOrderStatus } from '../../services/realtime.js'
 import StatusPage from './StatusPage'
 import './OrderDetails.css'
 
@@ -44,12 +45,19 @@ export default function OrderDetails() {
   const { state } = useLocation()
   const { session } = useAuth()
   const load = useCallback(signal => getOrder(id, signal), [id])
-  const { loading, data: order, error, retry, setData } = useLoad(load)
+  const { loading, data, error, retry, setData } = useLoad(load)
   const [placed, setPlaced] = useState(Boolean(state?.placed))
   const [message, setMessage] = useState(null)
+  const [live, setLive] = useState(null)
   const isAdmin = session.role === 'Admin'
   const backTo = isAdmin ? routes.allOrders : routes.myOrders
   const status = error?.status
+  const order = data && applyStatusChange(data, live)
+
+  useEffect(() => {
+    if (isAdmin) return undefined
+    return watchOrderStatus(id, change => setLive(current => latestChange(current, change)), retry)
+  }, [id, isAdmin, retry])
 
   if (status === 403) return <StatusPage kind="denied" message={error.message || undefined} />
   if (status === 400 || status === 404) return <StatusPage kind="not-found" message="Order not found." />
