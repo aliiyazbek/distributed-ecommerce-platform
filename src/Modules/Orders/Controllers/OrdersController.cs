@@ -3,6 +3,7 @@ using Asp.Versioning;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Modules.Orders.Contracts;
 using Modules.Orders.Interfaces;
 using Shared.Controllers;
@@ -23,7 +24,7 @@ public class OrdersController : BaseController
 
     [HttpPost]
     [Authorize(Roles = "Customer")]
-
+    [EnableRateLimiting("order-create")] // load leveling: limited concurrency + FIFO queue (Program.cs)
     public async Task<IActionResult> CreateOrder([FromBody] CreateOrderRequest request)
     {
         var (success, data, error) = await _orderService.CreateOrderAsync(GetUserId(), GetUserEmail(), request);

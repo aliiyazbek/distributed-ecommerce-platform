@@ -5,13 +5,23 @@ const { Pool } = require('pg');
 const path = require('path');
 
 // 1. Setup Database Connection Pool
+// PostgreSQL accepts 100 connections in total, shared with the API, the email worker and pgAdmin, so the
+// pool is capped (DB_POOL_MAX, default 20). Under a spike, requests wait at most DB_POOL_WAIT_MS for a free
+// connection and then fail cleanly instead of piling up until the caller's 2 s gRPC deadline.
 const pool = new Pool({
     user: process.env.DB_USER,
     host: process.env.DB_HOST,
     database: process.env.DB_NAME,
     password: process.env.DB_PASSWORD,
     port: process.env.DB_PORT,
+    max: Number(process.env.DB_POOL_MAX || 20),
+    connectionTimeoutMillis: Number(process.env.DB_POOL_WAIT_MS || 1500),
+    idleTimeoutMillis: 30000,
 });
+
+// An idle client can be dropped by the server (e.g. Postgres restart). Without this handler the
+// 'error' event would crash the whole process.
+pool.on('error', err => console.error('[pg] idle client error:', err.message));
 
 // 2. Auto-initialize Database Tables
 async function initDb() {
@@ -75,8 +85,59 @@ async function checkQuantities(call, callback) {
     }
 }
 
-// Reserves ALL lines of an order in one transaction: either every line is reserved or none is.
-// A constant number of SQL statements, whatever the number of lines.
+// Reserves ALL lines of an order atomically: either every line is reserved or none is.
+//
+// One SQL statement (data-modifying CTEs) instead of BEGIN / SELECT ... FOR UPDATE / UPDATE / INSERT / COMMIT:
+// the stock rows stay locked only while this single statement runs (about a millisecond) instead of across
+// five network round trips. Under a spike on one popular product, that lock time is the bottleneck,
+// because every order for that product must wait for the previous one (this is what prevents overselling).
+//   req     : the requested lines (duplicates already merged below)
+//   already : idempotency - this order was reserved before (retry after a timeout) -> report success
+//   locked  : locks the stock rows in product_id order (fixed order = no deadlocks between orders)
+//   verdict : all products exist and all have enough stock?
+//   upd/ins : apply the reservation only when the verdict is positive (all or nothing)
+const RESERVE_SQL = `
+WITH req AS (
+    SELECT r.product_id, r.amount FROM unnest($2::uuid[], $3::int[]) AS r(product_id, amount)
+),
+already AS (
+    SELECT EXISTS (SELECT 1 FROM inventory.reservations WHERE order_id = $1) AS done
+),
+locked AS (
+    SELECT s.product_id, s.available_quantity
+    FROM inventory.stock s
+    WHERE s.product_id = ANY($2::uuid[])
+    ORDER BY s.product_id
+    FOR UPDATE
+),
+verdict AS (
+    SELECT (SELECT done FROM already) AS done,
+           COUNT(l.product_id) = (SELECT COUNT(*) FROM req) AS all_found,
+           COALESCE(BOOL_AND(l.available_quantity >= req.amount), false) AS all_enough
+    FROM req LEFT JOIN locked l USING (product_id)
+),
+upd AS (
+    UPDATE inventory.stock s
+    SET available_quantity = s.available_quantity - req.amount
+    FROM req, verdict v
+    WHERE s.product_id = req.product_id AND NOT v.done AND v.all_found AND v.all_enough
+    RETURNING s.product_id
+),
+ins AS (
+    INSERT INTO inventory.reservations (order_id, product_id, amount)
+    SELECT $1, req.product_id, req.amount FROM req, verdict v
+    WHERE NOT v.done AND v.all_found AND v.all_enough
+    RETURNING product_id
+)
+SELECT v.done, v.all_found, v.all_enough,
+       (SELECT COUNT(*) FROM upd)::int AS updated,
+       (SELECT COUNT(*) FROM ins)::int AS inserted,
+       COALESCE((SELECT json_agg(json_build_object('ProductId', req.product_id, 'Requested', req.amount, 'Available', l.available_quantity))
+                 FROM req JOIN locked l USING (product_id) WHERE l.available_quantity < req.amount), '[]'::json) AS shortages,
+       COALESCE((SELECT json_agg(req.product_id)
+                 FROM req LEFT JOIN locked l USING (product_id) WHERE l.product_id IS NULL), '[]'::json) AS missing
+FROM verdict v`;
+
 async function reserveItems(call, callback) {
     const { OrderId } = call.request;
 
@@ -95,65 +156,26 @@ async function reserveItems(call, callback) {
     const productIds = [...totals.keys()];
     const amounts = productIds.map(id => totals.get(id));
 
-    const client = await pool.connect();
     try {
-        await client.query('BEGIN');
+        // pool.query borrows a connection, runs the statement (its own transaction) and returns the connection.
+        const { rows: [r] } = await pool.query(RESERVE_SQL, [OrderId, productIds, amounts]);
 
-        // Idempotency: reservations for an order are all-or-nothing, so any existing row means
-        // this order was already reserved (e.g. a retry after a timeout).
-        const existing = await client.query('SELECT 1 FROM inventory.reservations WHERE order_id = $1 LIMIT 1', [OrderId]);
-        if (existing.rows.length > 0) {
-            await client.query('COMMIT');
+        if (r.done) {
             return callback(null, { Success: true, Message: 'Already reserved', Shortages: [], MissingProductIds: [] });
         }
-
-        // Lock every stock row of the order in a fixed order (by product_id), so two concurrent
-        // orders sharing products always lock in the same sequence and cannot deadlock.
-        const stockRes = await client.query(
-            `SELECT product_id, available_quantity FROM inventory.stock
-             WHERE product_id = ANY($1::uuid[])
-             ORDER BY product_id
-             FOR UPDATE`,
-            [productIds]
-        );
-        const available = new Map(stockRes.rows.map(r => [r.product_id, r.available_quantity]));
-
-        const missing = productIds.filter(id => !available.has(id));
-        const shortages = productIds
-            .filter(id => available.has(id) && available.get(id) < totals.get(id))
-            .map(id => ({ ProductId: id, Requested: totals.get(id), Available: available.get(id) }));
-
-        if (missing.length > 0 || shortages.length > 0) {
-            await client.query('ROLLBACK');
-            return callback(null, {
-                Success: false,
-                Message: missing.length > 0 ? 'Product not found in inventory' : 'Insufficient stock',
-                Shortages: shortages,
-                MissingProductIds: missing
-            });
+        if (r.all_found && r.all_enough) {
+            return callback(null, { Success: true, Message: 'Reserved successfully', Shortages: [], MissingProductIds: [] });
         }
-
-        // One UPDATE and one INSERT for all lines, using unnest() over parallel arrays.
-        await client.query(
-            `UPDATE inventory.stock s
-             SET available_quantity = s.available_quantity - r.amount
-             FROM unnest($1::uuid[], $2::int[]) AS r(product_id, amount)
-             WHERE s.product_id = r.product_id`,
-            [productIds, amounts]
-        );
-        await client.query(
-            `INSERT INTO inventory.reservations (order_id, product_id, amount)
-             SELECT $1, r.product_id, r.amount FROM unnest($2::uuid[], $3::int[]) AS r(product_id, amount)`,
-            [OrderId, productIds, amounts]
-        );
-
-        await client.query('COMMIT');
-        callback(null, { Success: true, Message: 'Reserved successfully', Shortages: [], MissingProductIds: [] });
+        callback(null, {
+            Success: false,
+            Message: r.missing.length > 0 ? 'Product not found in inventory' : 'Insufficient stock',
+            Shortages: r.shortages,
+            MissingProductIds: r.missing
+        });
     } catch (err) {
-        await client.query('ROLLBACK');
-        callback({ code: grpc.status.INTERNAL, details: err.message || 'Database error' });
-    } finally {
-        client.release(); // Prevent connection leaks
+        // No free connection in time, Postgres full or down: report it as a gRPC error, never crash the process.
+        const busy = /timeout exceeded when trying to connect|too many clients/i.test(err.message || '');
+        callback({ code: busy ? grpc.status.UNAVAILABLE : grpc.status.INTERNAL, details: err.message || 'Database error' });
     }
 }
 
@@ -161,9 +183,10 @@ async function reserveItems(call, callback) {
 // Idempotent: calling it again (or for an order with no reservations) changes nothing.
 async function releaseOrder(call, callback) {
     const { OrderId } = call.request;
-    const client = await pool.connect();
+    let client;
 
     try {
+        client = await pool.connect(); // inside try: no free connection -> gRPC error, not a crash
         await client.query('BEGIN');
 
         const reserved = await client.query(
@@ -193,10 +216,10 @@ async function releaseOrder(call, callback) {
         await client.query('COMMIT');
         callback(null, { Success: true, Message: reserved.rows.length > 0 ? 'Released successfully' : 'Nothing to release' });
     } catch (err) {
-        await client.query('ROLLBACK');
+        if (client) await client.query('ROLLBACK').catch(() => {}); // the connection itself may be broken
         callback({ code: grpc.status.INTERNAL, details: err.message });
     } finally {
-        client.release(); // Prevent connection leaks
+        client?.release(); // Prevent connection leaks
     }
 }
 
@@ -245,11 +268,12 @@ function gracefulShutdown() {
 
 async function initializeStock(call, callback) {
     const { ProductId, InitialQuantity } = call.request;
-    const client = await pool.connect();
-    
+    let client;
+
     console.log(`[gRPC] InitializeStock received for Product: ${ProductId} with Qty: ${InitialQuantity}`);
 
     try {
+        client = await pool.connect(); // inside try: no free connection -> gRPC error, not a crash
         await client.query('BEGIN');
         
         await client.query(
@@ -260,10 +284,10 @@ async function initializeStock(call, callback) {
         await client.query('COMMIT');
         callback(null, { Success: true, Message: "Stock initialized successfully" });
     } catch (err) {
-        await client.query('ROLLBACK');
+        if (client) await client.query('ROLLBACK').catch(() => {});
         console.error(`[gRPC] InitializeStock error:`, err.message);
         callback({ code: grpc.status.INTERNAL, details: err.message });
     } finally {
-        client.release();
+        client?.release();
     }
 }

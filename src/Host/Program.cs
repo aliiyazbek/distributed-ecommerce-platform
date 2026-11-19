@@ -91,6 +91,18 @@ builder.Services.AddRateLimiter(options =>
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                 QueueLimit = 0
             }));
+
+    // Load leveling for order creation: every order for a popular product must wait for the same stock-row
+    // lock, so running hundreds at once only makes them fight for database and inventory connections and
+    // time out. At most OrderCreation:MaxConcurrent run at the same time; the rest wait in a cheap in-memory
+    // queue (first come, first served) and are processed at the speed the database can sustain. Only when
+    // the queue itself is full does a request get an immediate 429 instead of a slow timeout.
+    options.AddConcurrencyLimiter("order-create", limiter =>
+    {
+        limiter.PermitLimit = builder.Configuration.GetValue("OrderCreation:MaxConcurrent", 32);
+        limiter.QueueLimit = builder.Configuration.GetValue("OrderCreation:QueueLimit", 5000);
+        limiter.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
 });
 
 // Per-request record of cache hits/misses, read by CacheStatusHeaderMiddleware
