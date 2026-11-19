@@ -8,6 +8,8 @@
 .orders-table thead th { height: 38px; padding: 10px 20px; color: #77716a; font-size: 10px; font-weight: 500; line-height: 1.4; text-transform: uppercase; white-space: nowrap; }
 .orders-table tbody tr { cursor: pointer; }
 .orders-table tbody tr:hover { background: #fbfaf8; }
+.orders-table tbody tr.orders-row--new { animation: order-arrived 6s ease-out; }
+@keyframes order-arrived { from { background: #f3f0ff; } to { background: transparent; } }
 .orders-table tbody th, .orders-table tbody td { height: 54px; padding: 12px 20px; border-top: 1px solid var(--border-soft); font-size: 12px; line-height: 1.4; white-space: nowrap; color: var(--text-muted); }
 .orders-table .order-number, .orders-table .order-total { font-family: ui-monospace, Consolas, monospace; font-weight: 600; color: #35312e; font-variant-numeric: tabular-nums; }
 .customer-id { padding: 3px 6px; border-radius: 4px; background: #f5f4f2; color: #57514c; font-family: ui-monospace, Consolas, monospace; font-size: 10px; font-weight: 600; }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 export default function useLoad(load) {
   const [attempt, setAttempt] = useState(0)
@@ -16,12 +16,13 @@ export default function useLoad(load) {
   }, [load, attempt])
 
   const current = result?.load === load && result.attempt === attempt ? result : null
+  const retry = useCallback(() => setAttempt(value => value + 1), [])
 
   return {
     loading: !current,
     data: current?.data,
     error: current?.error,
-    retry: () => setAttempt(value => value + 1),
+    retry,
     setData: data => setResult({ load, attempt, data }),
   }
 }

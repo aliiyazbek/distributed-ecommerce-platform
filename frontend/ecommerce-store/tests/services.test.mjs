@@ -3,7 +3,7 @@ import { afterEach, test } from 'node:test'
 import { ApiError, request, setUnauthorizedHandler } from '../src/services/apiClient.js'
 import { authErrorMessage } from '../src/services/authService.js'
 import { addLine, countItems, removeLine, setLineQuantity } from '../src/services/cartService.js'
-import { formatMoney, getOrders, lineTotal, orderFailure, orderTotal, parseStockError, shortId, toOrder } from '../src/services/orderService.js'
+import { addNewOrder, applyStatusChange, formatMoney, getOrders, latestChange, lineTotal, orderFailure, orderStatuses, orderTotal, parseStockError, shortId, toOrder, withNewOrders } from '../src/services/orderService.js'
 import { toSession } from '../src/services/session.js'
 import { mapApiErrors, validateProduct } from '../src/pages/admin/productForm.js'
 import { validateAccount } from '../src/pages/store/accountForm.js'
@@ -125,8 +125,36 @@ test('maps an order from the API', () => {
   assert.equal(order.itemCount, 2)
   assert.equal(order.total, 49.98)
   assert.equal(order.lastUpdated, null)
+  assert.equal(order.changedAt, '2026-11-04T19:53:44.289727Z')
   assert.deepEqual(order.items, [{ productId: 'p1', name: 'Lamp', unitPrice: 24.99, quantity: 2 }])
   assert.equal(shortId('abc-def'), 'ABCDEF')
+})
+
+test('approval sits between pending and shipped', () => {
+  assert.deepEqual(orderStatuses, ['Pending', 'Approved', 'Shipped', 'Delivered', 'Cancelled'])
+})
+
+test('a live status change only moves its own order forward', () => {
+  const order = toOrder({ id: 'o1', userId: 'u1', status: 'Pending', totalPrice: 10, createdAt: '2026-11-19T10:00:00Z', updatedAt: null, items: [] })
+  const approved = { orderId: 'o1', status: 'Approved', changedAt: '2026-11-19T10:05:00Z' }
+  const shipped = { orderId: 'o1', status: 'Shipped', changedAt: '2026-11-19T10:09:00Z' }
+  assert.equal(applyStatusChange(order, approved).status, 'Approved')
+  assert.equal(applyStatusChange(order, approved).changedAt, approved.changedAt)
+  assert.equal(applyStatusChange(order, { ...approved, orderId: 'o2' }), order)
+  assert.equal(applyStatusChange(order, null), order)
+  assert.equal(applyStatusChange(applyStatusChange(order, shipped), approved).status, 'Shipped')
+  assert.equal(latestChange(shipped, approved), shipped)
+  assert.equal(latestChange(approved, shipped), shipped)
+  assert.equal(latestChange({ ...shipped, orderId: 'o2' }, approved), approved)
+})
+
+test('a new order is added once, on top of the loaded page', () => {
+  const [a, b, c] = ['a', 'b', 'c'].map(id => ({ id }))
+  const arrived = addNewOrder(addNewOrder(addNewOrder([], a), b), b)
+  assert.deepEqual(arrived.map(order => order.id), ['b', 'a'])
+  assert.ok(arrived.every(order => order.isNew))
+  assert.deepEqual(withNewOrders(arrived, [a, c]).map(order => order.id), ['b', 'a', 'c'])
+  assert.equal(withNewOrders(arrived, undefined), undefined)
 })
 
 test('order pagination preserves the server lookahead flag even for a full final page', async () => {

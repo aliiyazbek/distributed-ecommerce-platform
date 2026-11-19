@@ -1,6 +1,6 @@
 import { request } from './apiClient.js'
 
-export const orderStatuses = ['Pending', 'Shipped', 'Delivered', 'Cancelled']
+export const orderStatuses = ['Pending', 'Approved', 'Shipped', 'Delivered', 'Cancelled']
 
 const dateFormat = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' })
 
@@ -21,6 +21,7 @@ export function toOrder(order) {
     customerId: shortId(order.userId),
     datePlaced: formatDate(order.createdAt),
     lastUpdated: order.updatedAt ? formatDate(order.updatedAt) : null,
+    changedAt: order.updatedAt ?? order.createdAt,
     itemCount: items.reduce((count, item) => count + item.quantity, 0),
     total: order.totalPrice,
     status: order.status,
@@ -75,3 +76,22 @@ export function orderTotal(items) {
 }
 
 export const formatMoney = value => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value)
+
+const time = value => Date.parse(value) || 0
+
+export const latestChange = (current, change) =>
+  current?.orderId === change.orderId && time(current.changedAt) >= time(change.changedAt) ? current : change
+
+export function applyStatusChange(order, change) {
+  if (change?.orderId !== order.id || time(change.changedAt) <= time(order.changedAt)) return order
+  return { ...order, status: change.status, changedAt: change.changedAt, lastUpdated: formatDate(change.changedAt) }
+}
+
+export const addNewOrder = (orders, order) =>
+  orders.some(known => known.id === order.id) ? orders : [{ ...order, isNew: true }, ...orders]
+
+export function withNewOrders(arrived, loaded) {
+  if (!loaded) return loaded
+  const known = new Set(loaded.map(order => order.id))
+  return [...arrived.filter(order => !known.has(order.id)), ...loaded]
+}

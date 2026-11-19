@@ -9,6 +9,7 @@ export default defineConfig({
     proxy: {
       '/api': backend,
       '/images': backend,
+      '/hubs': { target: backend, ws: true },
     },
   },
 })
