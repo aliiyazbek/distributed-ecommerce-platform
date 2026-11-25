@@ -34,10 +34,11 @@ public static class ProductsModuleExtensions
             .UseNpgsql(configuration.GetReadReplicaConnectionString(connectionString))
             .UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking));
 
-        // NEW: Register the gRPC client for the Inventory Service
+        // Register the gRPC client for the Inventory Service (configurable for Docker networking)
+        var inventoryUrl = configuration["GrpcServices:InventoryUrl"] ?? "http://127.0.0.1:50051";
         services.AddGrpcClient<InventoryService.InventoryServiceClient>("ProductsInventoryClient", options =>
         {
-            options.Address = new Uri("http://127.0.0.1:50051"); 
+            options.Address = new Uri(inventoryUrl);
         });
 
         // Cache settings (options pattern)
