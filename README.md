@@ -225,3 +225,85 @@ curl -i -X POST "http://localhost:5169/hubs/orders/negotiate?negotiateVersion=1&
 - الفرع `main` محمي، ولا يُكتب عليه مباشرة.
 - كل تعديل يكون في فرع مستقل (مثلاً `feature/auth`)، ثم يُفتح Pull Request يراجعه زميل قبل الدمج.
 - لكل عضو Pull Request واحد على الأقل في كل متطلب.
+
+## المتطلب الخامس: التوسّع وتوزيع الأحمال (Scalability & Load Distribution)
+
+يعمل النظام في هذا المتطلب عبر 3 نسخ متطابقة من الـ API (`api-1`، `api-2`، `api-3`) خلف موزّع الحمل Nginx، و3 عمّال بريد (`worker-1`، `worker-2`، `worker-3`) يتقاسمون المهام من نفس طابور RabbitMQ.
+
+### 1. التشغيل وتطبيق التهجير (Migrations)
+
+1. على قاعدة بيانات جديدة، يجب تطبيق تهجيرات EF Core الأربعة (بما فيها جدول `email."ProcessedMessages"` الخاص بعامل البريد):
+
+```bash
+dotnet ef database update --project src/Modules/Users --startup-project src/Host --context UsersDbContext
+dotnet ef database update --project src/Modules/Products --startup-project src/Host --context ProductsDbContext
+dotnet ef database update --project src/Modules/Orders --startup-project src/Host --context OrdersDbContext
+dotnet ef database update --project src/Workers/EmailWorker --context EmailWorkerDbContext
+```
+
+في حال وجود PostgreSQL محلي على المنفذ `5432`، يمكن توليد سكربت SQL وتنفيذه مباشرة داخل حاوية Docker:
+
+```bash
+dotnet ef migrations script --idempotent --project src/Workers/EmailWorker --context EmailWorkerDbContext -o email.sql
+docker exec -i distributed-ecommerce-platform-postgres-1 psql -U ecommerce_user -d ecommerce_db < email.sql
+```
+
+2. تشغيل جميع الحاويات (14 حاوية) عبر Docker Compose:
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+> عند التشغيل عبر Docker Compose لا تشغّل `dotnet run` ولا `node inventory-service/server.js` محلياً، لأن المنفذين `5169` و`50051` مستخدمان من Nginx وحاوية المخزون.
+
+### 2. أوامر التحكم بالنسخ والعمّال
+
+```bash
+docker compose stop api-2            # إيقاف نسخة API بشكل طبيعي
+docker compose start api-2           # إعادة تشغيل نسخة API
+docker compose kill api-3            # إيقاف مفاجئ لمحاكاة انهيار نسخة
+docker compose stop worker-3         # إيقاف عامل بريد
+docker compose start worker-3        # إعادة تشغيل عامل بريد
+docker compose logs --tail 20 api-1  # عرض سجلات نسخة محددة
+docker compose logs worker-1 worker-2 worker-3  # عرض سجلات العمّال الثلاثة
+```
+
+### 3. تبرير استراتيجية توزيع الأحمال
+
+- **طلبات الـ API (`/`): `least_conn`** — الطلبات بلا حالة (Stateless) بفضل توكن JWT الموقّع بنفس المفتاح في جميع النسخ والبيانات المشتركة في PostgreSQL وRedis. كلفة الطلبات غير متساوية (قراءة منتج من الكاش تستغرق أجزاء من الميلي ثانية، بينما إنشاء طلب يتضمن اتصال gRPC بالمخزون ومعاملة قاعدة بيانات وOutbox)، لذلك يوجّه `least_conn` كل طلب جديد للنسخة الأقل انشغالاً بدلاً من التوزيع الأعمى (Round Robin).
+- **قنوات التحديث اللحظي (`/hubs/`): `ip_hash`** — يبدأ اتصال SignalR بطلب `negotiate` ثم يرتقي إلى WebSocket ويجب أن يصلا لنفس النسخة، لذلك يضمن `ip_hash` الالتصاق (Sticky Sessions) بينما يتولى Redis Backplane إيصال الأحداث بين جميع النسخ.
+- **الاستمرارية (Failover):** يراقب Nginx النسخ بشكل سلبي (`max_fails=2 fail_timeout=10s`) مع مهلة اتصال قصيرة (`proxy_connect_timeout 2s`) وإعادة توجيه تلقائية عبر `proxy_next_upstream` للطلبات الآمنة (دون `non_idempotent` لتجنب تكرار طلبات POST).
+
+### 4. المشاكل الخفية عند الانتقال من نسخة واحدة إلى ثلاث (قبل وبعد الإصلاح)
+
+| المشكلة (الحالة المحلية) | ماذا تعطل مع 3 نسخ | الإصلاح المطبّق | النتيجة قبل الإصلاح | النتيجة بعد الإصلاح |
+|---|---|---|---|---|
+| عدّاد محاولات الدخول في الذاكرة المحلية | سمحت كل نسخة بـ 5 محاولات (15 بدل 5) | `RedisAuthRateLimiterMiddleware` عبر سكربت Lua ذري في Redis | 15 محاولة عبر 3 نسخ | 5 محاولات `401` ثم `429` من أي نسخة |
+| إخفاء عنوان العميل وتزوير `X-Forwarded-For` | أظهر Nginx عنوانه، وتجاوز مهاجم الحد بترويسة مزيّفة | `UseForwardedHeaders` مع `ForwardLimit = 1` وكتابة `$remote_addr` في Nginx | 8 من 8 محاولات مسموحة مع ترويسة مزيّفة | 5 محاولات `401` ثم 3 ردود `429` |
+| اتصالات SignalR محفوظة في ذاكرة النسخة | استهلكت نسخة واحدة الحدث وفقدت النسختان الأخريان التحديث | إضافة Redis Backplane (`AddStackExchangeRedis`) و`ip_hash` على `/hubs/` | التحديث يصل لنسخة واحدة فقط | وصول `6/6` تحديثات عبر جميع النسخ |
+| تخزين صور المنتجات داخل القرص المحلي للحاوية | ملف مرفوع على `api-1` يعيد `404` من `api-2` و`api-3` | ربط حجم Docker مشترك `uploads-data` على `/app/wwwroot/images` | `404` من النسخ الأخرى | `200` من جميع النسخ (`3/3/3`) |
+| سباق العمّال الثلاثة على نفس الرسالة (`OrderCreatedConsumer`) | فحص عاملان `ProcessedMessages` معاً قبل الإدراج فأُرسل البريد مرتين | حجز ذري داخل معاملة عبر `INSERT ... ON CONFLICT ("MessageId") DO NOTHING` | 6 من 10 رسائل أُرسلت مرتين | 0 من 10 مكررة (بريد واحد لكل رسالة) |
+| انتظار Nginx 60 ثانية عند فحص نسخة متوقفة | علق طلب واحد حتى قُطع الاختبار واستغرق 56 ثانية | إضافة `proxy_connect_timeout 2s;` في `nginx.conf` | 56 ثانية مع 1 طلب مقطوع | 26.5 ثانية، `0` مقطوعة، `0.00%` أخطاء (`max=2.01s`) |
+| حفظ Nginx لعناوين IP النسخ عند البدء فقط | إعادة إنشاء `api-2` بعنوان IP جديد أخرجته من التوزيع | إضافة `resolver 127.0.0.11` و`zone` و`resolve` في `nginx.conf` | `api-2` استقبل `0` طلبات | عاد تلقائياً بالتوزيع `10 / 10 / 10` |
+| عنوان خدمة المخزون `127.0.0.1` ثابتاً في الكود | داخل الحاوية يشير للحاوية نفسها لا لخدمة المخزون | تمرير `GrpcServices__InventoryUrl=http://inventory-service:50051` | فشل اتصال gRPC | نجاح إنشاء الطلبات (`201`) |
+| تعدد ناشري الـ Outbox عبر 3 نسخ API | احتمال نشر نفس الصف مرتين لولا القفل | القفل الموجود مسبقاً `FOR UPDATE SKIP LOCKED` في `OutboxPublisher` | — | عدم تكرار النشر، وOutbox فارغ بعد الإرسال |
+
+### 5. اختبار الحمل (500 طلب) وإيقاف نسخة أثناء التشغيل
+
+سكربت اختبار الحمل موجود في `tests/load/load.js` ويُنفَّذ عبر `grafana/k6` بمعدل 20 طلباً في الثانية لمدة 25 ثانية (500 طلب):
+
+```bash
+docker run --rm --network distributed-ecommerce-platform_default -v "$(pwd)/tests/load:/scripts" grafana/k6 run /scripts/load.js
+```
+
+أثناء تشغيل الاختبار (بعد ~8 ثوانٍ) أوقف إحدى النسخ:
+
+```bash
+docker compose stop api-2
+```
+
+**النتائج المُثبتة:**
+- **مع `docker stop api-2`:** 501 طلب مكتمل، `0.00%` أخطاء، `0` طلبات مقطوعة، التوزيع `api-1: 225` / `api-2: 50` / `api-3: 226` خلال 26.5 ثانية.
+- **مع `docker kill api-3`:** 501 طلب مكتمل، `0.00%` أخطاء، `0` طلبات مقطوعة، التوزيع `api-1: 226` / `api-2: 225` / `api-3: 50` خلال 26.6 ثانية.
+- **العمّال الثلاثة:** 15 طلباً متتابعاً وُزِّعت `5 / 5 / 5`، و30 طلباً متزامناً أنتجت 30 بريداً (`11 / 10 / 9`) مع `0` مفقود و`0` مكرر.

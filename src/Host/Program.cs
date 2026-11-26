@@ -50,7 +50,7 @@ builder.Services.AddApiVersioning(options =>
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
-    options.ForwardLimit = 2; // Accepts Nginx + one upstream hop (allows multi-IP simulation behind Docker)
+    options.ForwardLimit = 1; // Trust only the single Nginx reverse proxy hop
     options.KnownIPNetworks.Clear();
     options.KnownProxies.Clear();
 });

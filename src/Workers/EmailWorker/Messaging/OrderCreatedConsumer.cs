@@ -4,25 +4,26 @@ using System.Text.Json;
 using EmailWorker.Email;
 using EmailWorker.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
-using Npgsql;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using Shared.Messaging;
 
 namespace EmailWorker.Messaging;
 
-// Requirement 4: the independent email worker. Consumes order.created events from the durable
+// Requirement 4 & 5: the independent email worker. Consumes order.created events from the durable
 // email.order-created queue and sends a confirmation email for each.
 //
 // No email is lost:
 //   - manual acknowledgement: a message leaves the queue only after its email was sent; if the worker
 //     stops or crashes mid-way, RabbitMQ gives the message to the worker again.
-//   - temporary failure  -> reject -> dead-lettered to email.order-created.retry, which holds it for
-//     10 s (TTL) and dead-letters it back here. Attempts are counted from RabbitMQ's x-death header.
+//   - temporary failure  -> rollback claim and reject -> dead-lettered to email.order-created.retry,
+//     which holds it for 10 s (TTL) and dead-letters it back here. Attempts come from x-death.
 //   - permanent failure, or the last attempt failed -> copied to email.order-created.dlq (confirmed by
-//     RabbitMQ) with the reason in its headers, then removed from the main queue.
-// No email is sent twice: message ids already in email."ProcessedMessages" are acknowledged and skipped.
+//     RabbitMQ) with the reason in its headers, then committed and removed from the main queue.
+// No email is sent twice: each worker atomically claims the message_id in email."ProcessedMessages"
+// inside a transaction before sending, so concurrent workers cannot send duplicate emails.
 public sealed class OrderCreatedConsumer : BackgroundService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -120,8 +121,17 @@ public sealed class OrderCreatedConsumer : BackgroundService
                 return;
             }
 
-            // Idempotency: this message was already handled (redelivery or duplicate publish).
-            if (await AlreadyProcessedAsync(messageId, stoppingToken))
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<EmailWorkerDbContext>();
+            await using var tx = await db.Database.BeginTransactionAsync(stoppingToken);
+
+            // Atomic claim on the MessageId primary key: a second concurrent worker blocks until
+            // this transaction commits or rolls back, then sees claimed == 0 if already handled.
+            var claimed = await db.Database.ExecuteSqlInterpolatedAsync(
+                $"""INSERT INTO email."ProcessedMessages" ("MessageId", "OrderId", "ProcessedAt") VALUES ({messageId}, {order.OrderId}, {DateTime.UtcNow}) ON CONFLICT ("MessageId") DO NOTHING""",
+                stoppingToken);
+
+            if (claimed == 0)
             {
                 _logger.LogInformation("Message {MessageId} (order {OrderId}) already processed; skipping", messageId, order.OrderId);
                 await channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, CancellationToken.None);
@@ -136,27 +146,35 @@ public sealed class OrderCreatedConsumer : BackgroundService
             {
                 _logger.LogError("Email for order {OrderId} failed on attempt {Attempt}/{Max} ({Kind}): {Error}. Moving to the DLQ",
                     order.OrderId, attempt, RabbitMqTopology.EmailMaxAttempts, ex.IsPermanent ? "permanent" : "temporary", ex.Message);
-                await DeadLetterAsync(delivery, ex.Message, attempt);
-                await MarkProcessedAsync(messageId, order.OrderId);
+
+                var deadLettered = await DeadLetterAsync(delivery, ex.Message, attempt);
+                if (deadLettered)
+                    await TryCommitAsync(tx, messageId);
+                else
+                    await tx.RollbackAsync(CancellationToken.None);
+
                 return;
             }
             catch (EmailSendException ex)
             {
                 _logger.LogWarning("Email for order {OrderId} failed on attempt {Attempt}/{Max}: {Error}. Retrying in {Delay} s",
                     order.OrderId, attempt, RabbitMqTopology.EmailMaxAttempts, ex.Message, RabbitMqTopology.EmailRetryDelayMs / 1000);
+
+                // Release the claim so the retry delivery can process this message later.
+                await tx.RollbackAsync(CancellationToken.None);
                 // requeue: false -> dead-lettered to the retry queue (see RabbitMqTopology).
                 await channel.BasicRejectAsync(delivery.DeliveryTag, requeue: false, CancellationToken.None);
                 return;
             }
 
-            // The email is out. Record it, then acknowledge. If recording fails we still acknowledge:
+            // The email is out. Commit the claim, then acknowledge. If committing fails we still acknowledge:
             // a second email would be worse than a missing row.
-            await MarkProcessedAsync(messageId, order.OrderId);
+            await TryCommitAsync(tx, messageId);
             await channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, CancellationToken.None);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            // Shutting down: leave the message unacknowledged; RabbitMQ redelivers it after restart.
+            // Shutting down: transaction rolls back on dispose and the unacked message returns to RabbitMQ.
         }
         catch (Exception ex)
         {
@@ -170,8 +188,8 @@ public sealed class OrderCreatedConsumer : BackgroundService
     }
 
     // Copies the message to the DLQ, waits for RabbitMQ's confirm, then removes it from the main queue.
-    // If the copy fails, the message is rejected instead (retry queue), so it is never dropped.
-    private async Task DeadLetterAsync(BasicDeliverEventArgs delivery, string reason, long attempt)
+    // Returns true if moved to the DLQ, or false if it fell back to the retry queue.
+    private async Task<bool> DeadLetterAsync(BasicDeliverEventArgs delivery, string reason, long attempt)
     {
         var source = delivery.BasicProperties;
         var properties = new BasicProperties
@@ -195,11 +213,25 @@ public sealed class OrderCreatedConsumer : BackgroundService
             await _publishChannel!.BasicPublishAsync(exchange: "", routingKey: RabbitMqTopology.EmailDeadLetterQueue,
                 mandatory: true, basicProperties: properties, body: delivery.Body, cancellationToken: CancellationToken.None);
             await _consumeChannel!.BasicAckAsync(delivery.DeliveryTag, multiple: false, CancellationToken.None);
+            return true;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Could not move delivery {DeliveryTag} to the DLQ; rejecting it to the retry queue", delivery.DeliveryTag);
             await _consumeChannel!.BasicRejectAsync(delivery.DeliveryTag, requeue: false, CancellationToken.None);
+            return false;
+        }
+    }
+
+    private async Task TryCommitAsync(IDbContextTransaction tx, Guid messageId)
+    {
+        try
+        {
+            await tx.CommitAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not commit processed record for message {MessageId}", messageId);
         }
     }
 
@@ -231,32 +263,6 @@ public sealed class OrderCreatedConsumer : BackgroundService
         string text => text,
         _ => null
     };
-
-    private async Task<bool> AlreadyProcessedAsync(Guid messageId, CancellationToken cancellationToken)
-    {
-        await using var scope = _scopeFactory.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<EmailWorkerDbContext>();
-        return await db.ProcessedMessages.AnyAsync(m => m.MessageId == messageId, cancellationToken);
-    }
-
-    private async Task MarkProcessedAsync(Guid messageId, Guid orderId)
-    {
-        try
-        {
-            await using var scope = _scopeFactory.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<EmailWorkerDbContext>();
-            db.ProcessedMessages.Add(new ProcessedMessage { MessageId = messageId, OrderId = orderId, ProcessedAt = DateTime.UtcNow });
-            await db.SaveChangesAsync(CancellationToken.None);
-        }
-        catch (DbUpdateException ex) when (ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
-        {
-            // Already recorded by an earlier delivery: fine.
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Could not record message {MessageId} as processed", messageId);
-        }
-    }
 
     private async Task CloseAsync()
     {

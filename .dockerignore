@@ -1,0 +1,11 @@
+**/bin
+**/obj
+**/node_modules
+**/.env
+.git
+.vs
+.vscode
+.idea
+.playwright-mcp
+frontend/ecommerce-store/dist
+docs
