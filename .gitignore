@@ -23,3 +23,5 @@ obj/
 Thumbs.db
 .vscode/
 .idea/
+
+.fake

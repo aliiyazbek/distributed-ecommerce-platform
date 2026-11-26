@@ -1,14 +1,64 @@
-version: '3.8'
+x-api-common: &api-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: ecommerce-api:local
+  environment:
+    ASPNETCORE_ENVIRONMENT: Development
+    ASPNETCORE_HTTP_PORTS: "8080"
+    ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=ecommerce_db;Username=ecommerce_user;Password=ecommerce_password"
+    ConnectionStrings__ReadReplicaConnection: "Host=postgres-replica;Port=5432;Database=ecommerce_db;Username=ecommerce_user;Password=ecommerce_password;Timeout=3"
+    Redis__ConnectionString: "redis:6379,abortConnect=false,connectTimeout=500,syncTimeout=500"
+    RabbitMq__HostName: "rabbitmq"
+    RabbitMq__Port: "5672"
+    RabbitMq__UserName: "ecommerce"
+    RabbitMq__Password: "ecommerce_password"
+    GrpcServices__InventoryUrl: "http://inventory-service:50051"
+  volumes:
+    - uploads-data:/app/wwwroot/images
+  depends_on:
+    postgres:
+      condition: service_healthy
+    postgres-replica:
+      condition: service_started
+    redis:
+      condition: service_started
+    rabbitmq:
+      condition: service_healthy
+    inventory-service:
+      condition: service_started
+
+x-worker-common: &worker-common
+  build:
+    context: .
+    dockerfile: Dockerfile.worker
+  image: ecommerce-worker:local
+  environment:
+    ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=ecommerce_db;Username=ecommerce_user;Password=ecommerce_password"
+    RabbitMq__HostName: "rabbitmq"
+    RabbitMq__Port: "5672"
+    RabbitMq__UserName: "ecommerce"
+    RabbitMq__Password: "ecommerce_password"
+    Email__Host: "mailpit"
+    Email__Port: "1025"
+    Email__Security: "None"
+    Email__FromAddress: "orders@ecommerce.local"
+    Email__FromName: "E-Commerce Store"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+    mailpit:
+      condition: service_started
+
 services:
-  # PRIMARY: every write goes here (Requirement 3: read replica)
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ecommerce_user
       POSTGRES_PASSWORD: ecommerce_password
       POSTGRES_DB: ecommerce_db
-    # hba_file: allow the replica to stream WAL over the Docker network.
-    # wal_keep_size: keep enough WAL for the replica to catch up after a short outage.
     command: ["postgres", "-c", "hba_file=/etc/postgresql/pg_hba.conf", "-c", "wal_keep_size=256MB"]
     ports:
       - "5432:5432"
@@ -21,13 +71,10 @@ services:
       timeout: 3s
       retries: 30
 
-  # READ REPLICA: read-only copy kept in sync by streaming replication.
-  # First start clones the primary; rebuild it with:
-  #   docker compose rm -sf postgres-replica && docker volume rm distributed-ecommerce-platform_pgdata-replica
   postgres-replica:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: ecommerce_user          # used once, to create the replication role on the primary
+      POSTGRES_USER: ecommerce_user
       POSTGRES_PASSWORD: ecommerce_password
       POSTGRES_DB: ecommerce_db
       PRIMARY_HOST: postgres
@@ -45,7 +92,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    # allkeys-lru: when memory is full Redis evicts the least recently used keys (safe for a pure cache)
     command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
     ports:
       - "6379:6379"
@@ -53,8 +99,8 @@ services:
   mailpit:
     image: axllent/mailpit
     ports:
-      - "8025:8025" # Web UI
-      - "1025:1025" # SMTP Port
+      - "8025:8025"
+      - "1025:1025"
 
   pgadmin:
     image: dpage/pgadmin4
@@ -68,13 +114,13 @@ services:
 
   rabbitmq:
     image: rabbitmq:4-management
-    hostname: rabbitmq            # fixed node name, so stored messages survive container re-creation
+    hostname: rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: ecommerce
       RABBITMQ_DEFAULT_PASS: ecommerce_password
     ports:
-      - "127.0.0.1:5672:5672"     # AMQP: the API and worker connect here
-      - "127.0.0.1:15672:15672"   # management dashboard
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
@@ -83,7 +129,56 @@ services:
       timeout: 5s
       retries: 5
 
+  inventory-service:
+    build:
+      context: .
+      dockerfile: inventory-service/Dockerfile
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ecommerce_user
+      DB_PASSWORD: ecommerce_password
+      DB_NAME: ecommerce_db
+      GRPC_PORT: "50051"
+    ports:
+      - "50051:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api-1:
+    <<: *api-common
+    hostname: api-1
+  api-2:
+    <<: *api-common
+    hostname: api-2
+  api-3:
+    <<: *api-common
+    hostname: api-3
+
+  worker-1:
+    <<: *worker-common
+    hostname: worker-1
+  worker-2:
+    <<: *worker-common
+    hostname: worker-2
+  worker-3:
+    <<: *worker-common
+    hostname: worker-3
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "5169:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api-1
+      - api-2
+      - api-3
+
 volumes:
   pgdata:
   pgdata-replica:
   rabbitmq-data:
+  uploads-data:
